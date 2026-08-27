@@ -934,16 +934,30 @@ async function deleteLineup(id) {
   return writeLineups(lineups.filter((lineup) => lineup.id !== target));
 }
 
-async function publishSelection(selectedPlayerIds, live = false) {
+function allowedAbsences(lineupSize, partial) {
+  return partial ? Math.max(0, lineupSize - 3) : 0;
+}
+
+async function publishSelection(selectedPlayerIds, live = false, partialLineup = false) {
   const config = await readConfig();
   const selected = [...new Set((Array.isArray(selectedPlayerIds) ? selectedPlayerIds : []).map(Number).filter(Number.isInteger))];
   if (selected.length < 2 || selected.length > 5) throw new Error('Select two to five players before publishing.');
   const ownerAccountId = steamIdToAccount(config.STEAM_ID64);
   if (!selected.includes(ownerAccountId)) throw new Error('The authenticated Steam player must be included.');
   const archive = archivePayload();
+  // Indexed once: this runs on every automatic re-publish, and scanning every
+  // stat row per match made that quadratic.
+  const rosters = new Map();
+  for (const row of archive.stats) {
+    const roster = rosters.get(row.matchId);
+    if (roster) roster.add(Number(row.accountId));
+    else rosters.set(row.matchId, new Set([Number(row.accountId)]));
+  }
+  const required = selected.length - allowedAbsences(selected.length, partialLineup);
   const matchIds = new Set(archive.matches.filter((match) => {
-    const present = new Set(archive.stats.filter((row) => row.matchId === match.id).map((row) => Number(row.accountId)));
-    return selected.every((accountId) => present.has(accountId));
+    const present = rosters.get(match.id);
+    if (!present || !present.has(ownerAccountId)) return false;
+    return selected.filter((accountId) => present.has(accountId)).length >= required;
   }).map((match) => match.id));
   const matches = archive.matches.filter((match) => matchIds.has(match.id)).map((match) => {
     const publishedMatch = { ...match };
@@ -957,7 +971,7 @@ async function publishSelection(selectedPlayerIds, live = false) {
     matches,
     players,
     stats,
-    published: { publishedAt: new Date().toISOString(), selectedPlayerIds: selected, ownerSteamId64: config.STEAM_ID64, matchCount: matches.length, live: Boolean(live) },
+    published: { publishedAt: new Date().toISOString(), selectedPlayerIds: selected, ownerSteamId64: config.STEAM_ID64, matchCount: matches.length, live: Boolean(live), partialLineup: Boolean(partialLineup) },
   };
   const temporary = `${publishedPath}.tmp`;
   await writeFile(temporary, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
@@ -1019,7 +1033,7 @@ async function republishLive() {
     const current = JSON.parse(await readFile(publishedPath, 'utf8'));
     const info = current?.published;
     if (!info?.live || !Array.isArray(info.selectedPlayerIds) || info.selectedPlayerIds.length < 2) return false;
-    await publishSelection(info.selectedPlayerIds, true);
+    await publishSelection(info.selectedPlayerIds, true, Boolean(info.partialLineup));
     return true;
   } catch {
     return false;
@@ -1097,7 +1111,7 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && url.pathname === '/api/publish') {
       const body = await bodyJson(request);
-      const published = await publishSelection(body.selectedPlayerIds, body.live);
+      const published = await publishSelection(body.selectedPlayerIds, body.live, body.partialLineup);
       return send(response, 200, { published: published.published });
     }
     if (request.method === 'POST' && url.pathname === '/api/maps') {

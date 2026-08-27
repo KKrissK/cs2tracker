@@ -19,7 +19,7 @@ type ServiceStatus = {
 type Match = { id: string; shareCode: string; playedAt: string; map: string; durationSeconds: number; rounds: number; teamAScore: number; teamBScore: number; userTeam: number | null; result: string };
 type Player = { accountId: number; steamId64: string; name: string; avatarUrl: string };
 type PlayerMatch = { matchId: string; accountId: number; team: number; kills: number; deaths: number; assists: number; headshots: number; mvps: number; score: number; rating: number };
-type PublishedInfo = { publishedAt: string; selectedPlayerIds: number[]; ownerSteamId64: string; matchCount: number; live?: boolean };
+type PublishedInfo = { publishedAt: string; selectedPlayerIds: number[]; ownerSteamId64: string; matchCount: number; live?: boolean; partialLineup?: boolean };
 type Archive = { matches: Match[]; players: Player[]; stats: PlayerMatch[]; published?: PublishedInfo | null };
 type Lineup = { id: string; name: string; playerIds: number[]; savedAt: string };
 type RecentEntry = { id: string; label: string; savedAt: string; secret: boolean };
@@ -28,6 +28,14 @@ type RecentCredentials = Record<'steamProfile' | 'apiKey' | 'knownCode' | 'gameA
 const emptyArchive: Archive = { matches: [], players: [], stats: [] };
 
 const selectionStorageKey = 'stackline.lineup.selection';
+const partialStorageKey = 'stackline.lineup.partial';
+
+// A four stack tolerates one absence, a five stack two; smaller lineups have to
+// be complete or the filter stops meaning anything. Mirrored in the service so a
+// published page matches what the owner saw.
+function allowedAbsences(lineupSize: number, partial: boolean) {
+  return partial ? Math.max(0, lineupSize - 3) : 0;
+}
 
 // The working lineup belongs to this browser, so it is restored on reload instead
 // of being reseeded from the published snapshot on every poll.
@@ -175,6 +183,7 @@ export default function Home() {
   const [savingLineup, setSavingLineup] = useState(false);
   const [ledgerLimit, setLedgerLimit] = useState(100);
   const [liveShare, setLiveShare] = useState(true);
+  const [partialLineup, setPartialLineup] = useState(false);
   const [liveRoute, setLiveRoute] = useState(false);
   const [rangeDays, setRangeDays] = useState(1);
   const [rangeFrom, setRangeFrom] = useState('');
@@ -214,6 +223,7 @@ export default function Home() {
         if (isViewerLocation()) {
           // The viewer mirrors the published snapshot and has nothing to preserve.
           if (nextArchive.published?.selectedPlayerIds?.length) setSelected(nextArchive.published.selectedPlayerIds);
+          setPartialLineup(Boolean(nextArchive.published?.partialLineup));
           return;
         }
         if (selectionSeeded.current) {
@@ -223,6 +233,7 @@ export default function Home() {
         }
         selectionSeeded.current = true;
         setSelected(withOwner(readStoredSelection(), ownerId));
+        try { setPartialLineup(window.localStorage.getItem(partialStorageKey) === '1'); } catch {}
       }
     } catch {
       serviceSignature.current = '';
@@ -256,7 +267,8 @@ export default function Home() {
   useEffect(() => {
     if (viewerMode || !selectionSeeded.current) return;
     writeStoredSelection(selected);
-  }, [selected, viewerMode]);
+    try { window.localStorage.setItem(partialStorageKey, partialLineup ? '1' : '0'); } catch {}
+  }, [partialLineup, selected, viewerMode]);
 
   useEffect(() => {
     const initial = window.setTimeout(() => { void refresh(); }, 0);
@@ -307,12 +319,21 @@ export default function Home() {
   }, [archive.stats]);
   const ownerPlayer = service?.steamId64 ? archive.players.find((player) => player.steamId64 === service.steamId64) ?? null : null;
   const ownerAccountId = ownerPlayer?.accountId ?? null;
+  const absencesAllowed = allowedAbsences(selected.length, partialLineup);
   const filteredMatches = useMemo(() => {
     if (selected.length < 2) return archive.matches;
+    const required = selected.length - absencesAllowed;
+    return archive.matches.filter((match) => {
+      const ids = new Set((statsByMatch.get(match.id) ?? []).map((row) => row.accountId));
+      return selected.filter((id) => ids.has(id)).length >= required;
+    });
+  }, [absencesAllowed, archive.matches, selected, statsByMatch]);
+  const strictMatchCount = useMemo(() => {
+    if (selected.length < 2) return archive.matches.length;
     return archive.matches.filter((match) => {
       const ids = new Set((statsByMatch.get(match.id) ?? []).map((row) => row.accountId));
       return selected.every((id) => ids.has(id));
-    });
+    }).length;
   }, [archive.matches, selected, statsByMatch]);
   const visibleStats = useMemo(() => {
     const matchIds = new Set(filteredMatches.map((match) => match.id));
@@ -443,7 +464,7 @@ export default function Home() {
     if (viewerMode || selected.length < 2) return;
     setPublishing(true); setNotice('');
     try {
-      const response = await fetch(apiUrl('/api/publish'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selectedPlayerIds: selected, live: liveShare }) });
+      const response = await fetch(apiUrl('/api/publish'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selectedPlayerIds: selected, live: liveShare, partialLineup }) });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not publish the viewer snapshot.');
       setNotice(liveShare
@@ -552,7 +573,7 @@ export default function Home() {
 
           {view === 'played-with' && <>{viewerMode && liveRoute && archive.published && <section className="live-card" aria-labelledby="live-title">
             <div className="live-heading">
-              <div><p className="eyebrow accent">{archive.published.live ? 'Live feed' : 'Snapshot'}</p><h2 id="live-title">Recent matches</h2></div>
+              <div><p className="eyebrow accent">{archive.published.live ? 'Live feed' : 'Snapshot'}</p><h2 id="live-title">Recent matches</h2>{archive.published?.partialLineup && <small className="live-rule">Includes matches missing up to {allowedAbsences(selected.length, true)} of the lineup</small>}</div>
               <span className={archive.published.live && !liveBlocked ? 'live-pill on' : liveBlocked ? 'live-pill stalled' : 'live-pill'}><i />{liveBlocked ? `${service?.live?.pending ?? 0} match${(service?.live?.pending ?? 0) === 1 ? '' : 'es'} waiting` : archive.published.live ? 'Updating automatically' : 'Fixed snapshot'}</span>
             </div>
             <div className="live-range">
@@ -593,6 +614,13 @@ export default function Home() {
                 <input value={lineupName} onChange={(event) => setLineupName(event.target.value)} maxLength={60} placeholder={lineupSuggestion || 'Lineup name…'} aria-label="Lineup name" />
                 <button type="button" disabled={savingLineup || selected.length < 2} onClick={saveLineup}>{savingLineup ? 'Saving…' : 'Save lineup'}</button>
               </div>
+            </div>}
+            {selected.length >= 4 && <div className="tolerance-row">
+              <label className="tolerance-toggle">
+                <input type="checkbox" checked={partialLineup} disabled={viewerMode} onChange={(event) => { setPartialLineup(event.target.checked); setLedgerLimit(100); }} />
+                <span><strong>Count matches with up to {allowedAbsences(selected.length, true)} of them missing</strong><small>A {selected.length}-stack still counts when {allowedAbsences(selected.length, true) === 1 ? 'one player sits out' : 'up to two players sit out'}, as long as the rest played together.</small></span>
+              </label>
+              <span className="tolerance-count">{partialLineup ? <><b>{filteredMatches.length}</b> matches · {filteredMatches.length - strictMatchCount} added</> : <><b>{strictMatchCount}</b> matches · all {selected.length} present</>}</span>
             </div>}
             <div className="player-picker">
               {selected.map((id) => { const player = playerById.get(id); const isOwner = id === ownerAccountId; return player && <button key={id} className={`${isOwner ? 'player-chip owner-chip' : 'player-chip'}${viewerMode ? ' readonly-chip' : ''}`} type="button" disabled={viewerMode || isOwner} onClick={() => setSelected((current) => current.filter((value) => value !== id))}><PlayerAvatar player={player} className="chip-avatar" />{player.name}<b>{viewerMode ? 'PUBLISHED' : isOwner ? 'PINNED' : '×'}</b></button>; })}
