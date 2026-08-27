@@ -15,4 +15,4 @@ powershell -NoProfile -NonInteractive -Command ^
   "if($left){Write-Host ('Still listening on: ' + (($left.LocalPort | Sort-Object -Unique) -join ', '))}else{Write-Host 'All Stackline ports are free.'}"
 
 echo Stackline is stopped. Any separate ngrok window must be stopped with Ctrl+C.
-timeout /t 3 >nul
+ping -n 3 127.0.0.1 >nul

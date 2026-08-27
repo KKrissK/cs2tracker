@@ -14,6 +14,7 @@ type ServiceStatus = {
   importing: { running: boolean; total: number; processed: number; imported: number; failed: number; message: string };
   maps: { running: boolean; total: number; processed: number; resolved: number; failed: number; message: string };
   backfill?: { running: boolean; target: number; pages: number; seen: number; imported: number; skipped: number; failed: number; message: string };
+  live?: { enabled: boolean; checkedAt: string; message: string };
 };
 type Match = { id: string; shareCode: string; playedAt: string; map: string; durationSeconds: number; rounds: number; teamAScore: number; teamBScore: number; userTeam: number | null; result: string };
 type Player = { accountId: number; steamId64: string; name: string; avatarUrl: string };
@@ -459,7 +460,7 @@ export default function Home() {
             {todayMatches.length === 0 && <p className="live-empty">No matches yet today. This page refreshes on its own when the lineup plays.</p>}
           </section>}
           {archive.players.length > 0 && <section className="filter-card" id="players">
-            <div className="filter-heading"><div><p className="eyebrow">{viewerMode ? 'Published lineup' : 'Lineup filter'}</p><h2>{viewerMode ? 'Last published comparison' : 'Who played together?'}</h2></div>{viewerMode ? <p className="selection-rule">{archive.published ? `${archive.published.live ? 'Live · updated' : 'Published'} ${new Date(archive.published.publishedAt).toLocaleString()}` : 'Nothing published yet'}</p> : <div className="publish-controls"><label className="live-toggle" title="Re-publish automatically whenever new matches are analyzed"><input type="checkbox" checked={liveShare} onChange={(event) => setLiveShare(event.target.checked)} /><span>Keep live</span></label><button className="publish-button" type="button" disabled={publishing || selected.length < 2} onClick={publishViewer}>{publishing ? 'Publishing…' : 'Publish to view-only page ↗'}</button></div>}</div>
+            <div className="filter-heading"><div><p className="eyebrow">{viewerMode ? 'Published lineup' : 'Lineup filter'}</p><h2>{viewerMode ? 'Last published comparison' : 'Who played together?'}</h2></div>{viewerMode ? <p className="selection-rule">{archive.published ? `${archive.published.live ? 'Live · updated' : 'Published'} ${new Date(archive.published.publishedAt).toLocaleString()}` : 'Nothing published yet'}</p> : <div className="publish-controls"><label className="live-toggle" title="Check Valve for new matches every 5 minutes and re-publish the shared page automatically"><input type="checkbox" checked={liveShare} onChange={(event) => setLiveShare(event.target.checked)} /><span>Keep live</span></label>{service?.live?.enabled && <span className="live-status" title={service.live.message}><i />{service.live.checkedAt ? `Checked ${new Date(service.live.checkedAt).toLocaleTimeString()}` : 'Checking…'}</span>}<button className="publish-button" type="button" disabled={publishing || selected.length < 2} onClick={publishViewer}>{publishing ? 'Publishing…' : 'Publish to view-only page ↗'}</button></div>}</div>
             {!viewerMode && <div className="lineup-presets">
               <div className="preset-list">
                 <p className="eyebrow">Saved lineups</p>

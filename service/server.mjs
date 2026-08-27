@@ -61,6 +61,13 @@ const steamState = {
 const importState = { running: false, total: 0, processed: 0, imported: 0, failed: 0, message: '' };
 const mapState = { running: false, total: 0, processed: 0, resolved: 0, failed: 0, message: '' };
 const backfillState = { running: false, target: 0, pages: 0, seen: 0, imported: 0, skipped: 0, failed: 0, message: '' };
+const liveState = { enabled: false, checkedAt: '', message: '' };
+// Valve only publishes a match-sharing code once a match has finished, so this
+// is "shortly after each match ends", not mid-match. Five minutes keeps the
+// page current without hammering an API that already rate-limits this service.
+const liveSyncIntervalMs = 5 * 60_000;
+let liveSyncTimer = null;
+let liveSyncRunning = false;
 let loginSession = null;
 let steamUser = null;
 let csgo = null;
@@ -717,6 +724,7 @@ async function statusPayload() {
     importing: { ...importState },
     maps: { ...mapState },
     backfill: { ...backfillState },
+    live: { ...liveState },
   };
 }
 
@@ -816,12 +824,57 @@ async function publishSelection(selectedPlayerIds, live = false) {
   const temporary = `${publishedPath}.tmp`;
   await writeFile(temporary, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
   await rename(temporary, publishedPath);
+  if (live) startLiveSync();
+  else stopLiveSync();
   return payload;
 }
 
 // When the owner leaves the view-only page live, every newly analyzed match is
 // re-published under the lineup they already chose. Nothing new is exposed: the
 // snapshot is rebuilt by the same code path, which strips share codes.
+async function liveSyncTick() {
+  if (liveSyncRunning || importState.running || backfillState.running || mapState.running) return;
+  liveSyncRunning = true;
+  try {
+    if (!(await livePublishEnabled())) { stopLiveSync(); return; }
+    const result = await syncShareCodes();
+    // syncShareCodes only chains into an import while the Game Coordinator is
+    // still connected, and the previous import logs off when it finishes.
+    if (result.discovered) await startImport();
+    liveState.message = result.discovered ? `Imported ${result.discovered} new match${result.discovered === 1 ? '' : 'es'}.` : 'No new matches yet.';
+  } catch (error) {
+    liveState.message = error instanceof Error ? error.message : 'Live check failed.';
+  } finally {
+    liveState.checkedAt = new Date().toISOString();
+    liveSyncRunning = false;
+  }
+}
+
+async function livePublishEnabled() {
+  if (!existsSync(publishedPath)) return false;
+  try {
+    const current = JSON.parse(await readFile(publishedPath, 'utf8'));
+    return Boolean(current?.published?.live);
+  } catch {
+    return false;
+  }
+}
+
+function startLiveSync() {
+  liveState.enabled = true;
+  if (liveSyncTimer) return;
+  liveSyncTimer = setInterval(() => { void liveSyncTick(); }, liveSyncIntervalMs);
+  liveSyncTimer.unref?.();
+  void liveSyncTick();
+}
+
+function stopLiveSync() {
+  liveState.enabled = false;
+  if (!liveSyncTimer) return;
+  clearInterval(liveSyncTimer);
+  liveSyncTimer = null;
+}
+
 async function republishLive() {
   if (!existsSync(publishedPath)) return false;
   try {
@@ -955,6 +1008,8 @@ function surviveSteamFault(label, error) {
   csgo = null;
   gcReadyPromise = null;
 }
+
+void livePublishEnabled().then((enabled) => { if (enabled) startLiveSync(); });
 
 process.on('uncaughtException', (error) => surviveSteamFault('Unhandled exception (service kept running)', error));
 process.on('unhandledRejection', (reason) => surviveSteamFault('Unhandled rejection (service kept running)', reason));
