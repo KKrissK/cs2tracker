@@ -49,9 +49,18 @@ function withOwner(playerIds: number[], ownerAccountId: number | null) {
   return [ownerAccountId, ...unique.filter((id) => id !== ownerAccountId)].slice(0, 5);
 }
 
+const sharedRoutes = ['/live', '/archive'];
+
 function isViewerLocation() {
   if (typeof window === 'undefined') return false;
-  return window.location.port === '3001' || new URLSearchParams(window.location.search).get('viewer') === '1';
+  return window.location.port === '3001'
+    || sharedRoutes.includes(window.location.pathname)
+    || new URLSearchParams(window.location.search).get('viewer') === '1';
+}
+
+function isLiveRoute() {
+  if (typeof window === 'undefined') return false;
+  return window.location.pathname === '/live';
 }
 
 function apiUrl(path: string) {
@@ -121,6 +130,7 @@ export default function Home() {
   const [savingLineup, setSavingLineup] = useState(false);
   const [ledgerLimit, setLedgerLimit] = useState(100);
   const [liveShare, setLiveShare] = useState(true);
+  const [liveRoute, setLiveRoute] = useState(false);
   const [view, setView] = useState<'overview' | 'played-with'>('overview');
   const mapsRequested = useRef(false);
   const selectionSeeded = useRef(false);
@@ -199,6 +209,7 @@ export default function Home() {
     const syncLocation = () => {
       const isViewer = isViewerLocation();
       setViewerMode(isViewer);
+      setLiveRoute(isLiveRoute());
       setView(isViewer || ['#played-with', '#matches', '#players'].includes(window.location.hash) ? 'played-with' : 'overview');
     };
     syncLocation();
@@ -265,7 +276,6 @@ export default function Home() {
     }).filter((row) => row.player && row.matches).sort((a, b) => b.matches - a.matches || b.rating - a.rating).slice(0, selected.length ? 5 : 6);
   }, [archive.players, filteredMatches, playerById, selected, statsByAccount, statsByMatch]);
   const availablePlayers = useMemo(() => archive.players.filter((player) => !selected.includes(player.accountId) && player.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8), [archive.players, search, selected]);
-  const ledgerMatches = useMemo(() => filteredMatches.slice(0, ledgerLimit), [filteredMatches, ledgerLimit]);
   const todayMatches = useMemo(() => {
     const midnight = new Date();
     midnight.setHours(0, 0, 0, 0);
@@ -277,6 +287,9 @@ export default function Home() {
     losses: todayMatches.filter((match) => match.result === 'loss').length,
     draws: todayMatches.filter((match) => match.result !== 'win' && match.result !== 'loss').length,
   }), [todayMatches]);
+  const ledgerSource = useMemo(() => (liveRoute ? (todayMatches.length ? todayMatches : filteredMatches.slice(0, 20)) : filteredMatches), [filteredMatches, liveRoute, todayMatches]);
+  const ledgerMatches = useMemo(() => ledgerSource.slice(0, ledgerLimit), [ledgerSource, ledgerLimit]);
+  const publishedNames = useMemo(() => selected.map((id) => playerById.get(id)?.name).filter(Boolean).join(', '), [playerById, selected]);
   const lineupSuggestion = useMemo(() => selected.filter((id) => id !== ownerAccountId).map((id) => playerById.get(id)?.name).filter(Boolean).join(' + '), [ownerAccountId, playerById, selected]);
   const firstPlaceFinishes = visibleStats.reduce((sum, row) => sum + row.placements[0], 0);
   const bestAveragePlacement = visibleStats.length ? Math.min(...visibleStats.map((row) => row.averagePlacement)) : 0;
@@ -416,19 +429,19 @@ export default function Home() {
   return (
     <main className={viewerMode ? 'app-shell viewer-mode' : 'app-shell'}>
       <header className="topbar">
-        <a className="brand" href={viewerMode ? '#played-with' : '#overview'} aria-label="Stackline home"><span className="brand-mark"><i /><i /><i /></span><span>STACKLINE</span></a>
+        <a className="brand" href={viewerMode ? (liveRoute ? '/live' : '/archive') : '#overview'} aria-label="Stackline home"><span className="brand-mark"><i /><i /><i /></span><span>STACKLINE</span></a>
         <div className="archive-state"><span className={service ? 'pulse' : 'pulse offline'} /><span><strong>{viewerMode ? 'Live read-only archive' : 'Local archive'}</strong><small>{service ? `${service.analyzedMatches} analyzed · ${service.playerCount} players` : 'Local service offline'}</small></span></div>
         {viewerMode ? <span className="viewer-badge">VIEW ONLY</span> : <button className="sync-button" type="button" onClick={syncMatches} disabled={syncing}><span className={syncing ? 'spin' : ''}>↻</span>{syncing ? 'Syncing safely…' : 'Sync matches'}</button>}
       </header>
 
       <div className="dashboard" id="top">
         <aside className="sidebar">
-          <div><p className="eyebrow">Navigation</p><nav aria-label="Main navigation">{!viewerMode && <a className={view === 'overview' ? 'nav-item active' : 'nav-item'} href="#overview"><span>⌁</span>Overview</a>}<a className={view === 'played-with' ? 'nav-item active' : 'nav-item'} href="#played-with"><span>◉</span>Played with</a>{!viewerMode && <a className="nav-item" href="http://localhost:3001/#played-with" target="_blank" rel="noreferrer"><span>↗</span>View-only page</a>}</nav></div>
+          <div><p className="eyebrow">Navigation</p><nav aria-label="Main navigation">{!viewerMode && <a className={view === 'overview' ? 'nav-item active' : 'nav-item'} href="#overview"><span>⌁</span>Overview</a>}<a className={view === 'played-with' ? 'nav-item active' : 'nav-item'} href="#played-with"><span>◉</span>Played with</a>{!viewerMode && <a className="nav-item" href="http://localhost:3001/live" target="_blank" rel="noreferrer"><span>↗</span>View-only page</a>}</nav></div>
           {!viewerMode && <div className="connection-card"><span className="connection-icon">S</span><div><strong>{steamReady ? 'Steam approved' : 'Steam setup'}</strong><p>{steamConnected ? 'Game Coordinator connected' : steamReady ? 'Saved local session' : `${credentialCount} of 4 keys saved`}</p></div><button type="button" aria-label="Open Steam settings" onClick={() => setSettingsOpen(true)}>›</button></div>}
         </aside>
 
         <section className="content" id={view}>
-          <div className="hero-row"><div><p className="eyebrow accent">{viewerMode ? 'Shared Premier archive' : view === 'played-with' ? 'Lineup intelligence' : 'Premier match intelligence'}</p><h1>{view === 'played-with' ? 'Who played with you?' : 'Your real match archive.'}</h1><p className="lede">{view === 'played-with' ? `${ownerPlayer?.name ?? 'Your Steam player'} stays selected. Add one to four players to recalculate every match and statistic where everyone was present.` : 'Your authenticated Valve history, player profiles, match scoreboards, and map data are stored locally and ready to explore.'}</p></div><div className="scope-pill"><span>●</span>{viewerMode ? ' Live · Read only' : ' Valve Premier · Local only'}</div></div>
+          <div className="hero-row"><div><p className="eyebrow accent">{liveRoute ? 'Live Premier feed' : viewerMode ? 'Shared Premier archive' : view === 'played-with' ? 'Lineup intelligence' : 'Premier match intelligence'}</p><h1>{liveRoute ? 'Today, as it happens.' : view === 'played-with' ? 'Who played with you?' : 'Your real match archive.'}</h1><p className="lede">{liveRoute ? `Every Premier match ${publishedNames || 'this lineup'} finishes today appears here on its own, a few minutes after it ends.` : view === 'played-with' ? `${ownerPlayer?.name ?? 'Your Steam player'} stays selected. Add one to four players to recalculate every match and statistic where everyone was present.` : 'Your authenticated Valve history, player profiles, match scoreboards, and map data are stored locally and ready to explore.'}</p></div><div className="scope-pill"><span>●</span>{viewerMode ? ' Live · Read only' : ' Valve Premier · Local only'}</div></div>
           {notice && <button className="notice" type="button" onClick={() => setNotice('')}><span>i</span>{notice}<b>×</b></button>}
 
           {!viewerMode && view === 'overview' && <section className="pipeline-card" aria-labelledby="pipeline-title">
@@ -458,8 +471,9 @@ export default function Home() {
               <div className="form-cell"><span>Recent form</span><div className="form-dots">{recentForm.map((match) => <b key={match.id} className={match.result === 'win' ? 'form-win' : match.result === 'loss' ? 'form-loss' : 'form-draw'} title={`${match.map.replace(/^de_/, '')} · ${new Date(match.playedAt).toLocaleDateString()}`}>{match.result === 'win' ? 'W' : match.result === 'loss' ? 'L' : 'D'}</b>)}</div></div>
             </div>
             {todayMatches.length === 0 && <p className="live-empty">No matches yet today. This page refreshes on its own when the lineup plays.</p>}
+            <div className="live-links">{liveRoute ? <a href="/archive">Full archive and player stats →</a> : <a href="/live">Live view of today →</a>}</div>
           </section>}
-          {archive.players.length > 0 && <section className="filter-card" id="players">
+          {!liveRoute && archive.players.length > 0 && <section className="filter-card" id="players">
             <div className="filter-heading"><div><p className="eyebrow">{viewerMode ? 'Published lineup' : 'Lineup filter'}</p><h2>{viewerMode ? 'Last published comparison' : 'Who played together?'}</h2></div>{viewerMode ? <p className="selection-rule">{archive.published ? `${archive.published.live ? 'Live · updated' : 'Published'} ${new Date(archive.published.publishedAt).toLocaleString()}` : 'Nothing published yet'}</p> : <div className="publish-controls"><label className="live-toggle" title="Check Valve for new matches every 5 minutes and re-publish the shared page automatically"><input type="checkbox" checked={liveShare} onChange={(event) => setLiveShare(event.target.checked)} /><span>Keep live</span></label>{service?.live?.enabled && <span className="live-status" title={service.live.message}><i />{service.live.checkedAt ? `Checked ${new Date(service.live.checkedAt).toLocaleTimeString()}` : 'Checking…'}</span>}<button className="publish-button" type="button" disabled={publishing || selected.length < 2} onClick={publishViewer}>{publishing ? 'Publishing…' : 'Publish to view-only page ↗'}</button></div>}</div>
             {!viewerMode && <div className="lineup-presets">
               <div className="preset-list">
@@ -485,7 +499,7 @@ export default function Home() {
             <div className="filter-summary"><div><strong>{selected.length < 2 ? '—' : filteredMatches.length}</strong><span>Matches together</span></div><div><strong>{selected.length || '—'}</strong><span>Players selected</span></div><div><strong>{selected.length < 2 ? '—' : firstPlaceFinishes}</strong><span>First-place finishes</span></div><div><strong>{selected.length < 2 ? '—' : bestAveragePlacement.toFixed(2)}</strong><span>Best average place</span></div></div>
           </section>}
 
-          <section className="performance">
+          {!liveRoute && <section className="performance">
             <div className="section-heading"><div><p className="eyebrow">Adjusted performance</p><h2>{selected.length >= 2 ? `Across ${filteredMatches.length} shared matches` : 'Players in your archive'}</h2></div><span>{selected.length < 2 ? 'Select at least two to filter' : 'Only shared matches included'}</span></div>
             {visibleStats.length ? <div className="stat-grid">{visibleStats.map((row) => {
               const player = row.player!; const differential = row.kills - row.deaths;
@@ -497,11 +511,11 @@ export default function Home() {
                 <div className="mini-metrics"><span><small>K/D</small>{row.deaths ? (row.kills / row.deaths).toFixed(2) : row.kills.toFixed(2)}</span><span><small>ASSISTS</small>{row.assists}</span><span><small>RATING</small>{row.rating.toFixed(2)}</span></div>
               </button>;
             })}</div> : <div className="empty-state"><span className="empty-icon">◉</span><div><h3>{service?.discoveredCodes ? 'One Steam approval unlocks the scoreboards' : 'No matches discovered yet'}</h3><p>{service?.discoveredCodes ? 'Click step 03, scan the QR code in Steam Mobile, and approve. Stackline will import the real players and match stats automatically.' : 'Press Sync matches to discover your Valve history.'}</p>{service?.discoveredCodes ? <button className="inline-action" type="button" onClick={connectSteam}>Connect Steam & analyze</button> : null}</div></div>}
-          </section>
+          </section>}
 
           <section className="matches-section" id="matches">
-            <div className="section-heading"><div><p className="eyebrow">Match ledger</p><h2>Played together</h2></div><span>{service?.maps?.running ? `Resolving maps ${service.maps.processed} / ${service.maps.total}` : `${filteredMatches.length} real match${filteredMatches.length === 1 ? '' : 'es'}`}</span></div>
-            <div className="match-table"><div className="match-row match-head"><span>Match</span><span>Players</span><span>Score</span><span>Friendly team</span><span /></div>{filteredMatches.length ? ledgerMatches.map((match) => {
+            <div className="section-heading"><div><p className="eyebrow">{liveRoute ? (todayMatches.length ? 'Today' : 'Latest matches') : 'Match ledger'}</p><h2>{liveRoute ? (todayMatches.length ? 'Played today' : 'Most recent together') : 'Played together'}</h2></div><span>{service?.maps?.running ? `Resolving maps ${service.maps.processed} / ${service.maps.total}` : `${ledgerSource.length} real match${ledgerSource.length === 1 ? '' : 'es'}`}</span></div>
+            <div className="match-table"><div className="match-row match-head"><span>Match</span><span>Players</span><span>Score</span><span>Friendly team</span><span /></div>{ledgerSource.length ? ledgerMatches.map((match) => {
               const rows = statsByMatch.get(match.id) ?? [];
               const friendlyRows = [...rows].filter((row) => row.team === match.userTeam).sort((a, b) => b.score - a.score || b.rating - a.rating);
               return <button className={`match-row ${match.result === 'win' ? 'match-win' : match.result === 'loss' ? 'match-loss' : ''}`} type="button" key={match.id} onClick={() => setSelectedMatchId(match.id)}>
@@ -512,7 +526,7 @@ export default function Home() {
                 <span className="row-arrow">›</span>
               </button>;
             }) : <div className="table-empty"><strong>No matching analyzed matches</strong><p>{selected.length >= 2 ? 'Those selected players have not appeared together in the imported archive.' : `${service?.discoveredCodes ?? 0} match codes are stored and ready for Steam analysis.`}</p></div>}</div>
-            {filteredMatches.length > ledgerMatches.length && <button className="ledger-more" type="button" onClick={() => setLedgerLimit((current) => current + 100)}>Show 100 more<small>{ledgerMatches.length} of {filteredMatches.length} shown</small></button>}
+            {ledgerSource.length > ledgerMatches.length && <button className="ledger-more" type="button" onClick={() => setLedgerLimit((current) => current + 100)}>Show 100 more<small>{ledgerMatches.length} of {ledgerSource.length} shown</small></button>}
           </section>
           {archive.matches.length > 0 && <p className="rating-note">Rating index is a transparent scoreboard-based approximation normalized around 1.00 using kills per round, survival, and assists. It is not the proprietary HLTV Rating 2.0 formula.</p>}</>}
         </section>

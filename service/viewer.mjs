@@ -58,8 +58,8 @@ async function publicArchive() {
   return response.json();
 }
 
-async function proxySite(request, response, url) {
-  const upstream = await fetch(new URL(`${url.pathname}${url.search}`, siteOrigin), {
+async function proxySite(request, response, url, upstreamPath) {
+  const upstream = await fetch(new URL(upstreamPath ?? `${url.pathname}${url.search}`, siteOrigin), {
     headers: { Accept: request.headers.accept ?? '*/*' },
     signal: AbortSignal.timeout(15_000),
   });
@@ -79,9 +79,14 @@ const server = createServer(async (request, response) => {
     if (rateLimited(request)) return sendJson(response, 429, { error: 'Too many viewer requests. Try again shortly.' });
     if (!['GET', 'HEAD'].includes(request.method ?? '')) return sendJson(response, 405, { error: 'This viewer is read-only.' });
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    // /live is the shared page most visitors want: today's matches as they land.
+    // The full published comparison stays at /archive.
     if (url.pathname === '/' && url.searchParams.get('viewer') !== '1') {
-      response.writeHead(302, securityHeaders({ Location: '/?viewer=1#played-with' }));
+      response.writeHead(302, securityHeaders({ Location: '/live' }));
       return response.end();
+    }
+    if (url.pathname === '/live' || url.pathname === '/archive') {
+      return await proxySite(request, response, url, '/?viewer=1');
     }
     if (blockedPaths.some((path) => url.pathname === path || url.pathname.startsWith(`${path}/`))) return sendJson(response, 404, { error: 'Not found.' });
     if (url.pathname === '/api/status') return sendJson(response, 200, await publicStatus());

@@ -4,10 +4,11 @@ STACKLINE READ-ONLY VIEWER — NGROK GUIDE
 WHAT IS SHARED
 --------------
 Private app:       http://localhost:3000/#played-with
-Read-only viewer:  http://localhost:3001/#played-with
+Live shared page:  http://localhost:3001/live
+Full shared page:  http://localhost:3001/archive
 
-Only port 3001 should be exposed through ngrok. The viewer rejects write
-requests and does not expose Valve credentials or match-sharing codes.
+Only port 3001 should be exposed through ngrok. The viewer rejects every write
+request and does not expose Valve credentials or match-sharing codes.
 Anyone with the public URL can still see the displayed Steam names, profile
 pictures, Steam IDs, match dates, and statistics.
 
@@ -15,6 +16,18 @@ The viewer shows only the most recent snapshot published from the private
 Played With page. Choose players privately, then press "Publish to view-only
 page". Visitors cannot change the published lineup or run new searches; they
 can only inspect the published player cards, matches, and detail views.
+
+Two shared pages are available:
+
+  /live      Today's matches for the published lineup, the day's win-loss
+             record, and a recent-form strip. This is where "/" sends people.
+  /archive   The full published comparison: every shared match and the
+             per-player statistics.
+
+Leave "Keep live" ticked when publishing and Stackline checks Valve for new
+matches every five minutes, imports them, and re-publishes on its own. Valve
+only releases a match-sharing code after a match ends, so matches appear a
+few minutes after they finish rather than while they are being played.
 
 
 ONE-TIME NGROK ACCOUNT SETUP
@@ -37,7 +50,7 @@ START SHARING
 -------------
 1. Make sure Stackline is running. The following local page must open:
 
-   http://localhost:3001/#played-with
+   http://localhost:3001/live
 
 2. Open PowerShell in this project folder and run:
 
@@ -45,14 +58,16 @@ START SHARING
 
 3. Ngrok prints a Forwarding URL similar to:
 
-   https://example-name.ngrok-free.app
+   https://example-name.ngrok-free.dev
 
-4. Send teammates that URL. Stackline automatically locks it to the latest
-   published Played With snapshot:
+4. Send teammates that URL. It opens the live page automatically:
 
-   https://example-name.ngrok-free.app/
+   https://example-name.ngrok-free.dev/        -> redirects to /live
+   https://example-name.ngrok-free.dev/live    -> today's matches
+   https://example-name.ngrok-free.dev/archive -> full published comparison
 
-   A link ending in /#played-with also works and will be corrected automatically.
+   On the free ngrok plan each visitor sees a one-time "You are about to
+   visit" warning page from ngrok before the site loads.
 
 Keep the ngrok PowerShell window open while sharing. On the free plan, the
 public URL may change each time ngrok starts.
@@ -82,4 +97,4 @@ While ngrok is running, its local traffic inspector is usually available at:
 
 The read-only viewer itself is always checked locally at:
 
-   http://localhost:3001/#played-with
+   http://localhost:3001/live

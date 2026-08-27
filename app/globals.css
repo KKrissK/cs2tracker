@@ -42,3 +42,5 @@ img.avatar-photo{width:100%;height:100%;object-fit:cover;border-radius:inherit}
 
 .live-status{display:inline-flex;align-items:center;gap:6px;color:#8d9389;font-size:9px;font-weight:800;letter-spacing:.05em;white-space:nowrap}.live-status i{width:6px;height:6px;border-radius:50%;background:var(--acid);animation:livePulse 1.8s ease-in-out infinite}
 @media(max-width:650px){.live-status{display:none}}
+
+.live-links{padding:13px 22px;border-top:1px solid var(--line)}.live-links a{color:var(--acid);font-size:10px;font-weight:900;letter-spacing:.05em;text-decoration:none}.live-links a:hover{text-decoration:underline}
