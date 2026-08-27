@@ -1,8 +1,8 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
@@ -21,6 +21,7 @@ const envPath = join(root, '.env.local');
 const dataDir = join(root, 'data');
 const dbPath = join(dataDir, 'stackline.db');
 const tokenPath = join(dataDir, 'steam-refresh-token');
+const importAccountPath = join(dataDir, 'steam-import-account');
 const publishedPath = join(dataDir, 'published-view.json');
 const lineupsPath = join(dataDir, 'lineups.json');
 const port = 4300;
@@ -136,6 +137,20 @@ async function writeConfig(updates) {
   return next;
 }
 
+function readImportAccount() {
+  if (!existsSync(importAccountPath)) return '';
+  try { return clean(readFileSync(importAccountPath, 'utf8')); } catch { return ''; }
+}
+
+async function writeImportAccount(steamId64) {
+  const value = clean(steamId64);
+  if (!value) { await unlink(importAccountPath).catch(() => {}); return ''; }
+  const temporary = `${importAccountPath}.tmp`;
+  await writeFile(temporary, value, { encoding: 'utf8', mode: 0o600 });
+  await rename(temporary, importAccountPath);
+  return value;
+}
+
 async function saveRefreshToken(token) {
   const temporary = `${tokenPath}.tmp`;
   await writeFile(temporary, clean(token), { encoding: 'utf8', mode: 0o600 });
@@ -247,15 +262,11 @@ async function connectSteam(refreshToken) {
     steamUser.on('refreshToken', (token) => { void saveRefreshToken(token); });
     steamUser.once('loggedOn', () => {
       const loggedSteamId = steamUser.steamID?.getSteamID64?.() ?? '';
-      void readConfig().then((config) => {
-        if (loggedSteamId && config.STEAM_ID64 && loggedSteamId !== config.STEAM_ID64) {
-          fail(new Error('The approved Steam account does not match the configured profile.'));
-          steamUser.logOff();
-          return;
-        }
-        setSteamState('connecting_gc', 'Steam approved. Connecting to the CS2 Game Coordinator…', '');
-        steamUser.gamesPlayed([730], true);
-      });
+      // Any approved account may fetch this archive, so record which one did
+      // rather than refusing a deliberate second account.
+      if (loggedSteamId && loggedSteamId !== readImportAccount()) void writeImportAccount(loggedSteamId);
+      setSteamState('connecting_gc', 'Steam approved. Connecting to the CS2 Game Coordinator…', '');
+      steamUser.gamesPlayed([730], true);
     });
     csgo.on('matchList', (matches) => {
       for (const match of matches ?? []) {
@@ -283,9 +294,22 @@ async function connectSteam(refreshToken) {
   return gcReadyPromise;
 }
 
-async function startQrLogin() {
+async function forgetSteamAccount() {
+  try { steamUser?.gamesPlayed([], true); steamUser?.logOff(); } catch {}
+  steamUser = null;
+  csgo = null;
+  gcReadyPromise = null;
+  try { loginSession?.cancelLoginAttempt?.(); } catch {}
+  loginSession = null;
+  await unlink(tokenPath).catch(() => {});
+  await writeImportAccount('');
+  setSteamState('idle', 'No Steam account approved yet.', '');
+}
+
+async function startQrLogin(forceNewAccount = false) {
+  if (forceNewAccount) await forgetSteamAccount();
   if (steamState.status === 'connected') return;
-  if (existsSync(tokenPath)) {
+  if (!forceNewAccount && existsSync(tokenPath)) {
     await connectSteam(clean(await readFile(tokenPath, 'utf8')));
     return;
   }
@@ -296,12 +320,8 @@ async function startQrLogin() {
   loginSession.on('error', (error) => setSteamState('error', `Steam approval failed: ${error.message}`, ''));
   loginSession.on('authenticated', () => {
     void (async () => {
-      const config = await readConfig();
       const approvedSteamId = loginSession.steamID?.getSteamID64?.() ?? '';
-      if (config.STEAM_ID64 && approvedSteamId !== config.STEAM_ID64) {
-        setSteamState('error', 'Wrong Steam account approved. Please scan again with the configured account.', '');
-        return;
-      }
+      await writeImportAccount(approvedSteamId);
       await saveRefreshToken(loginSession.refreshToken);
       await connectSteam(loginSession.refreshToken);
     })().catch((error) => setSteamState('error', error.message, ''));
@@ -712,6 +732,7 @@ function archiveRevision() {
 
 async function statusPayload() {
   const config = await readConfig();
+  const importAccount = readImportAccount();
   const codes = db.prepare('SELECT COUNT(*) AS count FROM share_codes').get();
   const matches = db.prepare('SELECT COUNT(*) AS count FROM matches').get();
   const players = db.prepare('SELECT COUNT(*) AS count FROM players').get();
@@ -720,7 +741,11 @@ async function statusPayload() {
     credentials: { gameAuth: Boolean(config.CS2_GAME_AUTH_CODE), apiKey: Boolean(config.STEAM_WEB_API_KEY), steamId: Boolean(config.STEAM_ID64), knownCode: Boolean(config.CS2_KNOWN_SHARE_CODE) },
     steamId64: config.STEAM_ID64 || '', discoveredCodes: Number(codes.count), analyzedMatches: Number(matches.count), playerCount: Number(players.count),
     archiveRevision: archiveRevision(),
-    steam: { status: steamState.status, message: steamState.message, hasSavedSession: existsSync(tokenPath), qrDataUrl: steamState.qrDataUrl },
+    steam: {
+      status: steamState.status, message: steamState.message, hasSavedSession: existsSync(tokenPath), qrDataUrl: steamState.qrDataUrl,
+      importSteamId64: importAccount,
+      importIsOwner: Boolean(importAccount && importAccount === config.STEAM_ID64),
+    },
     importing: { ...importState },
     maps: { ...mapState },
     backfill: { ...backfillState },
@@ -971,7 +996,15 @@ const server = createServer(async (request, response) => {
       if (!backfillState.running) void startHistoryBackfill(body.targetMatches).catch(() => {});
       return send(response, 202, await statusPayload());
     }
-    if (request.method === 'POST' && url.pathname === '/api/steam/qr') { await startQrLogin(); return send(response, 200, await statusPayload()); }
+    if (request.method === 'POST' && url.pathname === '/api/steam/qr') {
+      const body = await bodyJson(request).catch(() => ({}));
+      await startQrLogin(Boolean(body.switchAccount));
+      return send(response, 200, await statusPayload());
+    }
+    if (request.method === 'POST' && url.pathname === '/api/steam/signout') {
+      await forgetSteamAccount();
+      return send(response, 200, await statusPayload());
+    }
     if (request.method === 'POST' && url.pathname === '/api/analyze') {
       if (importState.running) return send(response, 202, await statusPayload());
       void startImport().catch((error) => { importState.running = false; importState.message = error.message; });
