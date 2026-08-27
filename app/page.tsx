@@ -50,6 +50,26 @@ function withOwner(playerIds: number[], ownerAccountId: number | null) {
 }
 
 const sharedRoutes = ['/live', '/archive'];
+// The shared live page can widen to a calendar range, capped at one month so a
+// visitor cannot turn it into a full archive dump by hand-editing the dates.
+const maxRangeDays = 31;
+const dayMs = 86_400_000;
+
+function isoDay(date: Date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function startOfDay(value: Date) {
+  const copy = new Date(value);
+  copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
+function endOfDay(value: Date) {
+  const copy = new Date(value);
+  copy.setHours(23, 59, 59, 999);
+  return copy;
+}
 
 function isViewerLocation() {
   if (typeof window === 'undefined') return false;
@@ -131,6 +151,9 @@ export default function Home() {
   const [ledgerLimit, setLedgerLimit] = useState(100);
   const [liveShare, setLiveShare] = useState(true);
   const [liveRoute, setLiveRoute] = useState(false);
+  const [rangeDays, setRangeDays] = useState(1);
+  const [rangeFrom, setRangeFrom] = useState('');
+  const [rangeTo, setRangeTo] = useState('');
   const [view, setView] = useState<'overview' | 'played-with'>('overview');
   const mapsRequested = useRef(false);
   const selectionSeeded = useRef(false);
@@ -276,19 +299,39 @@ export default function Home() {
     }).filter((row) => row.player && row.matches).sort((a, b) => b.matches - a.matches || b.rating - a.rating).slice(0, selected.length ? 5 : 6);
   }, [archive.players, filteredMatches, playerById, selected, statsByAccount, statsByMatch]);
   const availablePlayers = useMemo(() => archive.players.filter((player) => !selected.includes(player.accountId) && player.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8), [archive.players, search, selected]);
-  const todayMatches = useMemo(() => {
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
-    return filteredMatches.filter((match) => new Date(match.playedAt).getTime() >= midnight.getTime());
-  }, [filteredMatches]);
-  const recentForm = useMemo(() => filteredMatches.slice(0, 10), [filteredMatches]);
+  // A custom calendar range wins over the preset, and is clamped to one month
+  // however the visitor sets the two dates.
+  const rangeBounds = useMemo(() => {
+    if (rangeFrom && rangeTo) {
+      const requestedFrom = startOfDay(new Date(`${rangeFrom}T00:00:00`));
+      let to = endOfDay(new Date(`${rangeTo}T00:00:00`));
+      if (Number.isNaN(requestedFrom.getTime()) || Number.isNaN(to.getTime())) return null;
+      if (requestedFrom > to) to = endOfDay(requestedFrom);
+      const widest = startOfDay(new Date(to.getTime() - (maxRangeDays - 1) * dayMs));
+      return { from: requestedFrom < widest ? widest : requestedFrom, to, clamped: requestedFrom < widest };
+    }
+    const to = endOfDay(new Date());
+    return { from: startOfDay(new Date(to.getTime() - (rangeDays - 1) * dayMs)), to, clamped: false };
+  }, [rangeDays, rangeFrom, rangeTo]);
+  const rangeMatches = useMemo(() => {
+    if (!rangeBounds) return [];
+    const from = rangeBounds.from.getTime();
+    const to = rangeBounds.to.getTime();
+    return filteredMatches.filter((match) => {
+      const played = new Date(match.playedAt).getTime();
+      return played >= from && played <= to;
+    });
+  }, [filteredMatches, rangeBounds]);
+  const rangeIsToday = !rangeFrom && !rangeTo && rangeDays === 1;
+  const recentForm = useMemo(() => (rangeMatches.length ? rangeMatches : filteredMatches).slice(0, 10), [filteredMatches, rangeMatches]);
   const todayRecord = useMemo(() => ({
-    wins: todayMatches.filter((match) => match.result === 'win').length,
-    losses: todayMatches.filter((match) => match.result === 'loss').length,
-    draws: todayMatches.filter((match) => match.result !== 'win' && match.result !== 'loss').length,
-  }), [todayMatches]);
-  const ledgerSource = useMemo(() => (liveRoute ? (todayMatches.length ? todayMatches : filteredMatches.slice(0, 20)) : filteredMatches), [filteredMatches, liveRoute, todayMatches]);
+    wins: rangeMatches.filter((match) => match.result === 'win').length,
+    losses: rangeMatches.filter((match) => match.result === 'loss').length,
+    draws: rangeMatches.filter((match) => match.result !== 'win' && match.result !== 'loss').length,
+  }), [rangeMatches]);
+  const ledgerSource = useMemo(() => (liveRoute ? (rangeMatches.length ? rangeMatches : filteredMatches.slice(0, 20)) : filteredMatches), [filteredMatches, liveRoute, rangeMatches]);
   const ledgerMatches = useMemo(() => ledgerSource.slice(0, ledgerLimit), [ledgerSource, ledgerLimit]);
+  const rangeLabel = rangeIsToday ? 'Played today' : rangeFrom && rangeTo ? `${rangeFrom} to ${rangeTo}` : `Last ${rangeDays} days`;
   const publishedNames = useMemo(() => selected.map((id) => playerById.get(id)?.name).filter(Boolean).join(', '), [playerById, selected]);
   const lineupSuggestion = useMemo(() => selected.filter((id) => id !== ownerAccountId).map((id) => playerById.get(id)?.name).filter(Boolean).join(' + '), [ownerAccountId, playerById, selected]);
   const firstPlaceFinishes = visibleStats.reduce((sum, row) => sum + row.placements[0], 0);
@@ -464,13 +507,24 @@ export default function Home() {
               <div><p className="eyebrow accent">{archive.published.live ? 'Live feed' : 'Snapshot'}</p><h2 id="live-title">Recent matches</h2></div>
               <span className={archive.published.live ? 'live-pill on' : 'live-pill'}><i />{archive.published.live ? 'Updating automatically' : 'Fixed snapshot'}</span>
             </div>
+            <div className="live-range">
+              <div className="range-presets" role="group" aria-label="Match period">
+                {[{ days: 1, label: 'Today' }, { days: 7, label: '7 days' }, { days: 14, label: '14 days' }, { days: 31, label: '1 month' }].map((preset) => <button key={preset.days} type="button" className={!rangeFrom && !rangeTo && rangeDays === preset.days ? 'range-chip active' : 'range-chip'} onClick={() => { setRangeDays(preset.days); setRangeFrom(''); setRangeTo(''); setLedgerLimit(100); }}>{preset.label}</button>)}
+              </div>
+              <div className="range-dates">
+                <label><span>From</span><input type="date" value={rangeFrom} max={rangeTo || isoDay(new Date())} onChange={(event) => { setRangeFrom(event.target.value); setLedgerLimit(100); }} /></label>
+                <label><span>To</span><input type="date" value={rangeTo} max={isoDay(new Date())} min={rangeFrom || undefined} onChange={(event) => { setRangeTo(event.target.value); setLedgerLimit(100); }} /></label>
+                {(rangeFrom || rangeTo) && <button type="button" className="range-clear" onClick={() => { setRangeFrom(''); setRangeTo(''); setRangeDays(1); setLedgerLimit(100); }}>Clear</button>}
+              </div>
+            </div>
+            {rangeBounds?.clamped && <p className="range-note">Showing the most recent month of that range — this page covers at most {maxRangeDays} days.</p>}
             <div className="live-today">
-              <div><strong>{todayMatches.length}</strong><span>Played today</span></div>
-              <div><strong className={todayRecord.wins > todayRecord.losses ? 'score-win' : todayRecord.losses > todayRecord.wins ? 'score-loss' : ''}>{todayRecord.wins}–{todayRecord.losses}{todayRecord.draws ? `–${todayRecord.draws}` : ''}</strong><span>Today W–L</span></div>
+              <div><strong>{rangeMatches.length}</strong><span>{rangeLabel}</span></div>
+              <div><strong className={todayRecord.wins > todayRecord.losses ? 'score-win' : todayRecord.losses > todayRecord.wins ? 'score-loss' : ''}>{todayRecord.wins}–{todayRecord.losses}{todayRecord.draws ? `–${todayRecord.draws}` : ''}</strong><span>Win–loss</span></div>
               <div><strong>{filteredMatches.length}</strong><span>Total together</span></div>
               <div className="form-cell"><span>Recent form</span><div className="form-dots">{recentForm.map((match) => <b key={match.id} className={match.result === 'win' ? 'form-win' : match.result === 'loss' ? 'form-loss' : 'form-draw'} title={`${match.map.replace(/^de_/, '')} · ${new Date(match.playedAt).toLocaleDateString()}`}>{match.result === 'win' ? 'W' : match.result === 'loss' ? 'L' : 'D'}</b>)}</div></div>
             </div>
-            {todayMatches.length === 0 && <p className="live-empty">No matches yet today. This page refreshes on its own when the lineup plays.</p>}
+            {rangeMatches.length === 0 && <p className="live-empty">{rangeIsToday ? 'No matches yet today. This page refreshes on its own when the lineup plays.' : `No matches in that period. Showing the ${Math.min(20, filteredMatches.length)} most recent instead.`}</p>}
             <div className="live-links">{liveRoute ? <a href="/archive">Full archive and player stats →</a> : <a href="/live">Live view of today →</a>}</div>
           </section>}
           {!liveRoute && archive.players.length > 0 && <section className="filter-card" id="players">
@@ -514,7 +568,7 @@ export default function Home() {
           </section>}
 
           <section className="matches-section" id="matches">
-            <div className="section-heading"><div><p className="eyebrow">{liveRoute ? (todayMatches.length ? 'Today' : 'Latest matches') : 'Match ledger'}</p><h2>{liveRoute ? (todayMatches.length ? 'Played today' : 'Most recent together') : 'Played together'}</h2></div><span>{service?.maps?.running ? `Resolving maps ${service.maps.processed} / ${service.maps.total}` : `${ledgerSource.length} real match${ledgerSource.length === 1 ? '' : 'es'}`}</span></div>
+            <div className="section-heading"><div><p className="eyebrow">{liveRoute ? (rangeMatches.length ? 'Selected period' : 'Latest matches') : 'Match ledger'}</p><h2>{liveRoute ? (rangeMatches.length ? rangeLabel : 'Most recent together') : 'Played together'}</h2></div><span>{service?.maps?.running ? `Resolving maps ${service.maps.processed} / ${service.maps.total}` : `${ledgerSource.length} real match${ledgerSource.length === 1 ? '' : 'es'}`}</span></div>
             <div className="match-table"><div className="match-row match-head"><span>Match</span><span>Players</span><span>Score</span><span>Friendly team</span><span /></div>{ledgerSource.length ? ledgerMatches.map((match) => {
               const rows = statsByMatch.get(match.id) ?? [];
               const friendlyRows = [...rows].filter((row) => row.team === match.userTeam).sort((a, b) => b.score - a.score || b.rating - a.rating);
