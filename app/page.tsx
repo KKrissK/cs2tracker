@@ -22,6 +22,8 @@ type PlayerMatch = { matchId: string; accountId: number; team: number; kills: nu
 type PublishedInfo = { publishedAt: string; selectedPlayerIds: number[]; ownerSteamId64: string; matchCount: number; live?: boolean };
 type Archive = { matches: Match[]; players: Player[]; stats: PlayerMatch[]; published?: PublishedInfo | null };
 type Lineup = { id: string; name: string; playerIds: number[]; savedAt: string };
+type RecentEntry = { id: string; label: string; savedAt: string; secret: boolean };
+type RecentCredentials = Record<'steamProfile' | 'apiKey' | 'knownCode' | 'gameAuth', RecentEntry[]>;
 
 const emptyArchive: Archive = { matches: [], players: [], stats: [] };
 
@@ -124,10 +126,24 @@ function PlayerAvatar({ player, className = '' }: { player: Player; className?: 
   return <span className={`player-avatar ${className}`} role="img" aria-label={`${player.name} profile picture`} style={{ backgroundColor: playerColor(player.accountId) }}><span className="avatar-fallback">{initials(player.name)}</span>{picture && <img className="avatar-photo" src={picture} alt="" loading="lazy" decoding="async" width={64} height={64} />}</span>;
 }
 
+// Entries carry a masked label and an opaque id. Choosing one posts the id, so
+// a saved secret is never delivered to the browser.
+function RecentPicker({ entries, value, onChange }: { entries: RecentEntry[]; value: string; onChange: (id: string) => void }) {
+  if (!entries.length) return null;
+  return <select className="recent-picker" value={value} onChange={(event) => onChange(event.target.value)} aria-label="Reuse a previously saved value">
+    <option value="">Enter a new value…</option>
+    {entries.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}{entry.savedAt ? ` · ${new Date(entry.savedAt).toLocaleDateString()}` : ''}</option>)}
+  </select>;
+}
+
 export default function Home() {
   const [service, setService] = useState<ServiceStatus | null>(null);
   const [archive, setArchive] = useState<Archive>(emptyArchive);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [gameAuth, setGameAuth] = useState('');
+  const [recent, setRecent] = useState<RecentCredentials | null>(null);
+  const [reuse, setReuse] = useState<Record<string, string>>({});
   const [steamOpen, setSteamOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -215,10 +231,19 @@ export default function Home() {
     } catch {}
   }, []);
 
+  const refreshRecent = useCallback(async () => {
+    if (isViewerLocation()) return;
+    try {
+      const response = await fetch(apiUrl('/api/credentials/recent'), { cache: 'no-store' });
+      if (!response.ok) return;
+      setRecent((await response.json()) as RecentCredentials);
+    } catch {}
+  }, []);
+
   useEffect(() => {
-    const initial = window.setTimeout(() => { void refreshLineups(); }, 0);
+    const initial = window.setTimeout(() => { void refreshLineups(); void refreshRecent(); }, 0);
     return () => window.clearTimeout(initial);
-  }, [refreshLineups]);
+  }, [refreshLineups, refreshRecent]);
   useEffect(() => {
     if (viewerMode || !selectionSeeded.current) return;
     writeStoredSelection(selected);
@@ -361,10 +386,14 @@ export default function Home() {
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError('');
     try {
-      const response = await fetch(apiUrl('/api/config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ steamProfile, apiKey, knownCode }) });
+      const response = await fetch(apiUrl('/api/config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        steamProfile, apiKey, knownCode, gameAuth,
+        steamProfileId: reuse.steamProfile ?? '', apiKeyId: reuse.apiKey ?? '', knownCodeId: reuse.knownCode ?? '', gameAuthId: reuse.gameAuth ?? '',
+      }) });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not save Steam settings.');
-      setService(payload); setSettingsOpen(false); setApiKey(''); setKnownCode('');
+      setService(payload); setSettingsOpen(false); setApiKey(''); setKnownCode(''); setGameAuth(''); setReuse({});
+      void refreshRecent();
       setNotice('Valve connection saved.');
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not save Steam settings.'); }
     finally { setSaving(false); }
@@ -460,6 +489,11 @@ export default function Home() {
     setSelectedMatchId(null);
   }
 
+  function chooseRecent(field: keyof RecentCredentials, id: string, clearInput: (value: string) => void) {
+    setReuse((current) => ({ ...current, [field]: id }));
+    if (id) clearInput('');
+  }
+
   function addPlayer(accountId: number) {
     if (selected.length < 5 && accountId !== ownerAccountId) setSelected((current) => [...current, accountId]);
     setSearch('');
@@ -481,7 +515,7 @@ export default function Home() {
       <div className="dashboard" id="top">
         <aside className="sidebar">
           <div><p className="eyebrow">Navigation</p><nav aria-label="Main navigation">{!viewerMode && <a className={view === 'overview' ? 'nav-item active' : 'nav-item'} href="#overview"><span>⌁</span>Overview</a>}<a className={view === 'played-with' ? 'nav-item active' : 'nav-item'} href="#played-with"><span>◉</span>Played with</a>{!viewerMode && <a className="nav-item" href="http://localhost:3001/live" target="_blank" rel="noreferrer"><span>↗</span>View-only page</a>}</nav></div>
-          {!viewerMode && <div className="connection-card"><span className="connection-icon">S</span><div><strong>{steamReady ? 'Steam approved' : 'Steam setup'}</strong><p>{steamConnected ? 'Game Coordinator connected' : steamReady ? 'Saved local session' : `${credentialCount} of 4 keys saved`}</p></div><button type="button" aria-label="Open Steam settings" onClick={() => setSettingsOpen(true)}>›</button></div>}
+          {!viewerMode && <button className="connection-card profile-trigger" type="button" aria-haspopup="dialog" onClick={() => setProfileOpen(true)}>{ownerPlayer ? <PlayerAvatar player={ownerPlayer} className="connection-avatar" /> : <span className="connection-icon">S</span>}<div><strong>{ownerPlayer?.name ?? (steamReady ? 'Steam approved' : 'Steam setup')}</strong><p>{steamConnected ? 'Game Coordinator connected' : steamReady ? 'Saved local session' : `${credentialCount} of 4 keys saved`}</p></div><span aria-hidden="true">›</span></button>}
         </aside>
 
         <section className="content" id={view}>
@@ -611,7 +645,29 @@ export default function Home() {
 
       {steamOpen && <div className="modal-backdrop" role="presentation"><section className="settings-modal steam-modal" role="dialog" aria-modal="true" aria-labelledby="steam-title"><button className="modal-close" type="button" onClick={() => setSteamOpen(false)} aria-label="Close Steam approval">×</button><p className="eyebrow accent">Steam client approval</p><h2 id="steam-title">Connect the CS2 archive</h2><p className="modal-copy">This authorizes a Steam account to fetch scoreboards. It does not have to be the profile you are archiving: a match is fetched with its share code, which carries its own token. Approving a second account frees your main one, so imports no longer collide with your own CS2 session. Your saved session never leaves this computer.</p>{service?.steam.importSteamId64 && <div className="account-banner"><span className={steamConnected ? 'status-dot ready' : 'status-dot'} /><div><strong>Importing as {service.steam.importIsOwner ? 'your own account' : 'a separate account'}</strong><small>SteamID64 {service.steam.importSteamId64}{service.steam.importIsOwner ? ' · same as the archived profile' : ` · archive stays ${ownerPlayer?.name ?? service.steamId64}`}</small></div></div>}{service?.steam.qrDataUrl && !steamConnected ? <div className="steam-qr" role="img" aria-label="Steam mobile sign-in QR code" style={{ backgroundImage: `url(${service.steam.qrDataUrl})` }} /> : <div className={steamConnected ? 'steam-success' : 'qr-loading'}>{steamConnected ? '✓' : '↻'}</div>}<div className="steam-message"><span className={steamConnected ? 'status-dot ready' : 'status-dot'} /><div><strong>{steamConnected ? 'Connected' : connecting ? 'Starting…' : 'Waiting for approval'}</strong><small>{service?.steam.message ?? 'Contacting the local service…'}</small></div></div>{error && <p className="form-error">{error}</p>}{steamConnected && <button className="primary-button" type="button" onClick={() => setSteamOpen(false)}>View live import</button>}<button className="ghost-button" type="button" disabled={connecting} onClick={() => { void connectSteam(true); }}>{service?.steam.hasSavedSession ? 'Use a different Steam account ↻' : 'Scan a new QR code ↻'}</button><p className="modal-footnote">Open Steam Mobile → scan the QR → approve. You only do this once; Stackline stores a refresh token in its ignored local data folder.</p></section></div>}
 
-      {settingsOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-close" type="button" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button><p className="eyebrow accent">Local connection</p><h2 id="settings-title">Connect Valve match history</h2><p className="modal-copy">These values stay in the ignored local secret file. Stackline never displays saved secrets back to the browser.</p><div className="saved-secret"><span className={service?.credentials.gameAuth ? 'status-dot ready' : 'status-dot'} /><div><strong>Game Authentication Code</strong><small>{service?.credentials.gameAuth ? 'Saved locally' : 'Missing'}</small></div><b>{service?.credentials.gameAuth ? '•••• ••••• ••••' : '—'}</b></div>{readyToSync && <div className="connected-banner"><span>✓</span><div><strong>Valve connection configured</strong><small>SteamID64 {service?.steamId64}</small></div></div>}<form onSubmit={saveSettings}><label><span>Steam profile URL or SteamID64</span><input required value={steamProfile} onChange={(event) => setSteamProfile(event.target.value)} placeholder="https://steamcommunity.com/id/…" autoComplete="off" /></label><label><span>Steam Web API key</span><input required type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Enter API key" autoComplete="off" /></label><label><span>Starting match token</span><input required value={knownCode} onChange={(event) => setKnownCode(event.target.value)} placeholder="CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx" autoComplete="off" /></label>{error && <p className="form-error">{error}</p>}<button className="primary-button" type="submit" disabled={saving || !service}>{saving ? 'Saving…' : service ? 'Replace connection settings' : 'Start local service first'}</button></form><p className="modal-footnote">You only enter one starting token. Stackline follows the history automatically and preserves its cursor after every discovered match.</p></section></div>}
+      {profileOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileOpen(false); }}>
+        <section className="settings-modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+          <button className="modal-close" type="button" onClick={() => setProfileOpen(false)} aria-label="Close profile">×</button>
+          <p className="eyebrow accent">Profile</p>
+          <h2 id="profile-title">{ownerPlayer?.name ?? 'Your Steam profile'}</h2>
+          <div className="profile-identity">
+            {ownerPlayer ? <PlayerAvatar player={ownerPlayer} className="profile-avatar" /> : <span className="connection-icon">S</span>}
+            <div><strong>Archived profile</strong><small>SteamID64 {service?.steamId64 || 'not set'}</small></div>
+          </div>
+          <div className="profile-rows">
+            <div className="profile-row"><div><strong>Importing account</strong><small>{service?.steam.importSteamId64 ? `${service.steam.importSteamId64}${service.steam.importIsOwner ? ' · same as archived profile' : ' · separate account'}` : 'No Steam account approved'}</small></div><button type="button" onClick={() => { setProfileOpen(false); void connectSteam(); }}>{service?.steam.hasSavedSession ? 'Manage' : 'Approve'}</button></div>
+            <div className="profile-row"><div><strong>Steam session</strong><small>{steamConnected ? 'Game Coordinator connected' : service?.steam.message || 'Not connected'}</small></div><span className={steamConnected ? 'status-dot ready' : 'status-dot'} /></div>
+            <div className="profile-row"><div><strong>Valve credentials</strong><small>{credentialCount} of 4 saved{liveBlocked ? ` · ${service?.live?.pending} match${service?.live?.pending === 1 ? '' : 'es'} waiting` : ''}</small></div><button type="button" onClick={() => { setProfileOpen(false); setSettingsOpen(true); }}>Configure</button></div>
+          </div>
+          <p className="modal-footnote">Saved secrets are never sent back to this page. Previously used values appear only as masked labels and are applied by reference.</p>
+        </section>
+      </div>}
+
+      {settingsOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><button className="modal-close" type="button" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button><p className="eyebrow accent">Local connection</p><h2 id="settings-title">Connect Valve match history</h2><p className="modal-copy">These values stay in the ignored local secret file. Stackline never displays saved secrets back to the browser: previously used values are listed as masked labels and applied by reference. Leave a field blank to keep what is already saved.</p><div className="saved-secret"><span className={service?.credentials.gameAuth ? 'status-dot ready' : 'status-dot'} /><div><strong>Game Authentication Code</strong><small>{service?.credentials.gameAuth ? 'Saved locally' : 'Missing'}</small></div><b>{service?.credentials.gameAuth ? '•••• ••••• ••••' : '—'}</b></div>{readyToSync && <div className="connected-banner"><span>✓</span><div><strong>Valve connection configured</strong><small>SteamID64 {service?.steamId64}</small></div></div>}<form onSubmit={saveSettings}>
+      <label><span>Steam profile URL or SteamID64</span><RecentPicker entries={recent?.steamProfile ?? []} value={reuse.steamProfile ?? ''} onChange={(id) => chooseRecent('steamProfile', id, setSteamProfile)} /><input value={steamProfile} onChange={(event) => { setSteamProfile(event.target.value); setReuse((current) => ({ ...current, steamProfile: '' })); }} placeholder={service?.steamId64 ? `Keep ${service.steamId64}` : 'https://steamcommunity.com/id/…'} autoComplete="off" /></label>
+      <label><span>Steam Web API key</span><RecentPicker entries={recent?.apiKey ?? []} value={reuse.apiKey ?? ''} onChange={(id) => chooseRecent('apiKey', id, setApiKey)} /><input type="password" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setReuse((current) => ({ ...current, apiKey: '' })); }} placeholder={service?.credentials.apiKey ? 'Keep the saved key' : 'Enter API key'} autoComplete="off" /></label>
+      <label><span>Game Authentication Code</span><RecentPicker entries={recent?.gameAuth ?? []} value={reuse.gameAuth ?? ''} onChange={(id) => chooseRecent('gameAuth', id, setGameAuth)} /><input type="password" value={gameAuth} onChange={(event) => { setGameAuth(event.target.value); setReuse((current) => ({ ...current, gameAuth: '' })); }} placeholder={service?.credentials.gameAuth ? 'Keep the saved code' : 'ABCD-EFGHI-JKLM'} autoComplete="off" /></label>
+      <label><span>Starting match token</span><RecentPicker entries={recent?.knownCode ?? []} value={reuse.knownCode ?? ''} onChange={(id) => chooseRecent('knownCode', id, setKnownCode)} /><input value={knownCode} onChange={(event) => { setKnownCode(event.target.value); setReuse((current) => ({ ...current, knownCode: '' })); }} placeholder={service?.credentials.knownCode ? 'Keep the saved cursor' : 'CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx'} autoComplete="off" /></label>{error && <p className="form-error">{error}</p>}<button className="primary-button" type="submit" disabled={saving || !service}>{saving ? 'Saving…' : service ? 'Replace connection settings' : 'Start local service first'}</button></form><p className="modal-footnote">You only enter one starting token. Stackline follows the history automatically and preserves its cursor after every discovered match.</p></section></div>}
     </main>
   );
 }

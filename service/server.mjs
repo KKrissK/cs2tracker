@@ -22,6 +22,7 @@ const dataDir = join(root, 'data');
 const dbPath = join(dataDir, 'stackline.db');
 const tokenPath = join(dataDir, 'steam-refresh-token');
 const importAccountPath = join(dataDir, 'steam-import-account');
+const credentialHistoryPath = join(dataDir, 'credential-history.json');
 const publishedPath = join(dataDir, 'published-view.json');
 const lineupsPath = join(dataDir, 'lineups.json');
 const port = 4300;
@@ -744,6 +745,62 @@ function liveBlockage() {
   return { pending, blocked: true, reason };
 }
 
+// Previously used values can be recalled without ever sending a secret back to
+// the browser: the interface lists masked labels and posts the entry's id, and
+// the value is resolved here.
+const historyFields = ['steamProfile', 'apiKey', 'knownCode', 'gameAuth'];
+const secretFields = new Set(['apiKey', 'gameAuth']);
+
+function maskValue(field, value) {
+  const text = clean(value);
+  if (!text) return '';
+  if (field === 'steamProfile') return text;
+  if (field === 'knownCode') return text.length > 16 ? `${text.slice(0, 10)}…${text.slice(-5)}` : text;
+  return `••••••••${text.slice(-4)}`;
+}
+
+async function readCredentialHistory() {
+  if (!existsSync(credentialHistoryPath)) return {};
+  try {
+    const payload = JSON.parse(await readFile(credentialHistoryPath, 'utf8'));
+    return payload && typeof payload === 'object' ? payload : {};
+  } catch {
+    return {};
+  }
+}
+
+async function rememberCredential(field, value) {
+  const text = clean(value);
+  if (!historyFields.includes(field) || !text) return;
+  const history = await readCredentialHistory();
+  const entries = Array.isArray(history[field]) ? history[field].filter((entry) => entry?.value !== text) : [];
+  entries.unshift({ id: randomUUID(), value: text, savedAt: new Date().toISOString() });
+  history[field] = entries.slice(0, 5);
+  const temporary = `${credentialHistoryPath}.tmp`;
+  await writeFile(temporary, JSON.stringify(history), { encoding: 'utf8', mode: 0o600 });
+  await rename(temporary, credentialHistoryPath);
+}
+
+async function recentCredentials() {
+  const history = await readCredentialHistory();
+  const result = {};
+  for (const field of historyFields) {
+    result[field] = (Array.isArray(history[field]) ? history[field] : [])
+      .filter((entry) => entry?.id && entry?.value)
+      .map((entry) => ({ id: entry.id, label: maskValue(field, entry.value), savedAt: entry.savedAt ?? '', secret: secretFields.has(field) }));
+  }
+  return result;
+}
+
+async function resolveCredential(field, rawValue, entryId) {
+  const direct = clean(rawValue);
+  if (direct) return direct;
+  if (!entryId) return '';
+  const history = await readCredentialHistory();
+  const entry = (Array.isArray(history[field]) ? history[field] : []).find((candidate) => candidate?.id === clean(entryId));
+  return entry ? clean(entry.value) : '';
+}
+
 async function statusPayload() {
   const config = await readConfig();
   const importAccount = readImportAccount();
@@ -1025,15 +1082,25 @@ const server = createServer(async (request, response) => {
       void startImport().catch((error) => { importState.running = false; importState.message = error.message; });
       return send(response, 202, await statusPayload());
     }
+    if (request.method === 'GET' && url.pathname === '/api/credentials/recent') return send(response, 200, await recentCredentials());
     if (request.method === 'POST' && url.pathname === '/api/config') {
       const body = await bodyJson(request);
-      const apiKey = clean(body.apiKey);
-      const steamId = await resolveSteamId(body.steamProfile, apiKey);
-      const knownCode = extractShareCode(body.knownCode);
+      const current = await readConfig();
+      const apiKey = await resolveCredential('apiKey', body.apiKey, body.apiKeyId) || current.STEAM_WEB_API_KEY;
+      const profileInput = await resolveCredential('steamProfile', body.steamProfile, body.steamProfileId);
+      const steamId = profileInput ? await resolveSteamId(profileInput, apiKey) : current.STEAM_ID64;
+      const knownCodeInput = await resolveCredential('knownCode', body.knownCode, body.knownCodeId);
+      const knownCode = knownCodeInput ? extractShareCode(knownCodeInput) : current.CS2_KNOWN_SHARE_CODE;
+      // The authentication code has no field until now, so a regenerated one
+      // could not be updated without editing the secret file by hand.
+      const gameAuth = await resolveCredential('gameAuth', body.gameAuth, body.gameAuthId) || current.CS2_GAME_AUTH_CODE;
       if (!apiKey) return send(response, 400, { error: 'Enter a Steam Web API key.' });
       if (!steamId) return send(response, 400, { error: 'Enter a valid Steam profile URL or SteamID64.' });
       if (!knownCode) return send(response, 400, { error: 'Enter a valid recent CSGO-… match-sharing code.' });
-      await writeConfig({ STEAM_WEB_API_KEY: apiKey, STEAM_ID64: steamId, CS2_KNOWN_SHARE_CODE: knownCode });
+      await writeConfig({ STEAM_WEB_API_KEY: apiKey, STEAM_ID64: steamId, CS2_KNOWN_SHARE_CODE: knownCode, CS2_GAME_AUTH_CODE: gameAuth });
+      for (const [field, value] of [['steamProfile', profileInput], ['apiKey', clean(body.apiKey)], ['knownCode', knownCode], ['gameAuth', clean(body.gameAuth)]]) {
+        await rememberCredential(field, value);
+      }
       return send(response, 200, await statusPayload());
     }
     if (request.method === 'POST' && url.pathname === '/api/sync') return send(response, 200, await syncShareCodes());
