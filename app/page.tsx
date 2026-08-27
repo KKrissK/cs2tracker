@@ -6,6 +6,7 @@ type ServiceStatus = {
   online: boolean;
   credentials: { gameAuth: boolean; apiKey: boolean; steamId: boolean; knownCode: boolean };
   steamId64: string;
+  archiveRevision?: string;
   discoveredCodes: number;
   analyzedMatches: number;
   playerCount: number;
@@ -107,16 +108,35 @@ export default function Home() {
   const [lineups, setLineups] = useState<Lineup[]>([]);
   const [lineupName, setLineupName] = useState('');
   const [savingLineup, setSavingLineup] = useState(false);
+  const [ledgerLimit, setLedgerLimit] = useState(100);
   const [view, setView] = useState<'overview' | 'played-with'>('overview');
   const mapsRequested = useRef(false);
   const selectionSeeded = useRef(false);
+  const archiveRevision = useRef('');
+  const archiveFetchedAt = useRef(0);
+  const serviceSignature = useRef('');
 
   const refresh = useCallback(async () => {
     try {
       const nextStatus = await loadStatus();
-      setService(nextStatus);
-      setBackfillTarget((current) => Math.max(current, nextStatus.analyzedMatches));
-      if (nextStatus.analyzedMatches) {
+      // Re-rendering on an identical status is pure cost, and this polls every 1.5s
+      // while an import or backfill is running.
+      const nextSignature = JSON.stringify(nextStatus);
+      if (nextSignature !== serviceSignature.current) {
+        serviceSignature.current = nextSignature;
+        setService(nextStatus);
+        setBackfillTarget((current) => Math.max(current, nextStatus.analyzedMatches));
+      }
+      // The archive is ~1.5 MB. Only pull it when the service says it actually
+      // changed, and at most once every 8s so a running backfill cannot swamp
+      // the main thread with re-renders.
+      const revision = nextStatus.archiveRevision ?? '';
+      const busy = nextStatus.importing.running || nextStatus.maps?.running || nextStatus.backfill?.running;
+      const elapsed = Date.now() - archiveFetchedAt.current;
+      const stale = revision !== archiveRevision.current;
+      if (nextStatus.analyzedMatches && (!archiveFetchedAt.current || (stale && (!busy || elapsed > 8000)))) {
+        archiveRevision.current = revision;
+        archiveFetchedAt.current = Date.now();
         const nextArchive = await loadArchive();
         setArchive(nextArchive);
         const owner = nextArchive.players.find((player) => player.steamId64 === nextStatus.steamId64);
@@ -134,7 +154,10 @@ export default function Home() {
         selectionSeeded.current = true;
         setSelected(withOwner(readStoredSelection(), ownerId));
       }
-    } catch { setService(null); }
+    } catch {
+      serviceSignature.current = '';
+      setService(null);
+    }
   }, []);
 
   const refreshLineups = useCallback(async () => {
@@ -192,6 +215,15 @@ export default function Home() {
     return map;
   }, [archive.stats]);
   const playerById = useMemo(() => new Map(archive.players.map((player) => [player.accountId, player])), [archive.players]);
+  const statsByAccount = useMemo(() => {
+    const map = new Map<number, PlayerMatch[]>();
+    for (const row of archive.stats) {
+      const rows = map.get(row.accountId);
+      if (rows) rows.push(row);
+      else map.set(row.accountId, [row]);
+    }
+    return map;
+  }, [archive.stats]);
   const ownerPlayer = service?.steamId64 ? archive.players.find((player) => player.steamId64 === service.steamId64) ?? null : null;
   const ownerAccountId = ownerPlayer?.accountId ?? null;
   const filteredMatches = useMemo(() => {
@@ -205,7 +237,7 @@ export default function Home() {
     const matchIds = new Set(filteredMatches.map((match) => match.id));
     const ids = selected.length ? selected : archive.players.map((player) => player.accountId);
     return ids.map((accountId) => {
-      const rows = archive.stats.filter((row) => row.accountId === accountId && matchIds.has(row.matchId));
+      const rows = (statsByAccount.get(accountId) ?? []).filter((row) => matchIds.has(row.matchId));
       const totals = rows.reduce((sum, row) => ({ kills: sum.kills + row.kills, deaths: sum.deaths + row.deaths, assists: sum.assists + row.assists, headshots: sum.headshots + row.headshots, rating: sum.rating + row.rating }), { kills: 0, deaths: 0, assists: 0, headshots: 0, rating: 0 });
       const placements = [0, 0, 0, 0, 0];
       let placementTotal = 0;
@@ -219,8 +251,9 @@ export default function Home() {
       }
       return { player: playerById.get(accountId), matches: rows.length, ...totals, placements, averagePlacement: rows.length ? placementTotal / rows.length : 0, rating: rows.length ? totals.rating / rows.length : 0 };
     }).filter((row) => row.player && row.matches).sort((a, b) => b.matches - a.matches || b.rating - a.rating).slice(0, selected.length ? 5 : 6);
-  }, [archive.players, archive.stats, filteredMatches, playerById, selected, statsByMatch]);
+  }, [archive.players, filteredMatches, playerById, selected, statsByAccount, statsByMatch]);
   const availablePlayers = useMemo(() => archive.players.filter((player) => !selected.includes(player.accountId) && player.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8), [archive.players, search, selected]);
+  const ledgerMatches = useMemo(() => filteredMatches.slice(0, ledgerLimit), [filteredMatches, ledgerLimit]);
   const lineupSuggestion = useMemo(() => selected.filter((id) => id !== ownerAccountId).map((id) => playerById.get(id)?.name).filter(Boolean).join(' + '), [ownerAccountId, playerById, selected]);
   const firstPlaceFinishes = visibleStats.reduce((sum, row) => sum + row.placements[0], 0);
   const bestAveragePlacement = visibleStats.length ? Math.min(...visibleStats.map((row) => row.averagePlacement)) : 0;
@@ -240,10 +273,10 @@ export default function Home() {
   const activePlayer = selectedPlayerId === null ? null : playerById.get(selectedPlayerId) ?? null;
   const activePlayerSummary = useMemo(() => {
     if (selectedPlayerId === null) return null;
-    const rows = archive.stats.filter((row) => row.accountId === selectedPlayerId);
+    const rows = statsByAccount.get(selectedPlayerId) ?? [];
     const totals = rows.reduce((sum, row) => ({ kills: sum.kills + row.kills, deaths: sum.deaths + row.deaths, assists: sum.assists + row.assists, headshots: sum.headshots + row.headshots, rating: sum.rating + row.rating }), { kills: 0, deaths: 0, assists: 0, headshots: 0, rating: 0 });
     return { ...totals, matches: rows.length, rating: rows.length ? totals.rating / rows.length : 0 };
-  }, [archive.stats, selectedPlayerId]);
+  }, [selectedPlayerId, statsByAccount]);
 
   async function saveSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setError('');
@@ -430,7 +463,7 @@ export default function Home() {
 
           <section className="matches-section" id="matches">
             <div className="section-heading"><div><p className="eyebrow">Match ledger</p><h2>Played together</h2></div><span>{service?.maps?.running ? `Resolving maps ${service.maps.processed} / ${service.maps.total}` : `${filteredMatches.length} real match${filteredMatches.length === 1 ? '' : 'es'}`}</span></div>
-            <div className="match-table"><div className="match-row match-head"><span>Match</span><span>Players</span><span>Score</span><span>Friendly team</span><span /></div>{filteredMatches.length ? filteredMatches.map((match) => {
+            <div className="match-table"><div className="match-row match-head"><span>Match</span><span>Players</span><span>Score</span><span>Friendly team</span><span /></div>{filteredMatches.length ? ledgerMatches.map((match) => {
               const rows = statsByMatch.get(match.id) ?? [];
               const friendlyRows = [...rows].filter((row) => row.team === match.userTeam).sort((a, b) => b.score - a.score || b.rating - a.rating);
               return <button className={`match-row ${match.result === 'win' ? 'match-win' : match.result === 'loss' ? 'match-loss' : ''}`} type="button" key={match.id} onClick={() => setSelectedMatchId(match.id)}>
@@ -441,6 +474,7 @@ export default function Home() {
                 <span className="row-arrow">›</span>
               </button>;
             }) : <div className="table-empty"><strong>No matching analyzed matches</strong><p>{selected.length >= 2 ? 'Those selected players have not appeared together in the imported archive.' : `${service?.discoveredCodes ?? 0} match codes are stored and ready for Steam analysis.`}</p></div>}</div>
+            {filteredMatches.length > ledgerMatches.length && <button className="ledger-more" type="button" onClick={() => setLedgerLimit((current) => current + 100)}>Show 100 more<small>{ledgerMatches.length} of {filteredMatches.length} shown</small></button>}
           </section>
           {archive.matches.length > 0 && <p className="rating-note">Rating index is a transparent scoreboard-based approximation normalized around 1.00 using kills per round, survival, and assists. It is not the proprietary HLTV Rating 2.0 formula.</p>}</>}
         </section>

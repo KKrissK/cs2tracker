@@ -692,6 +692,16 @@ async function bodyJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
 }
 
+// A cheap fingerprint of everything /api/archive would return. The web interface
+// polls status often but only re-downloads the archive when this value changes,
+// which keeps a 1.5 MB payload off the wire on every tick.
+function archiveRevision() {
+  const m = db.prepare("SELECT COUNT(*) AS count, MAX(imported_at) AS imported, SUM(CASE WHEN map = 'Unknown map' THEN 1 ELSE 0 END) AS unresolved FROM matches").get();
+  const rows = db.prepare('SELECT COUNT(*) AS count FROM match_players').get();
+  const people = db.prepare('SELECT COUNT(*) AS count FROM players').get();
+  return `${m.count}.${rows.count}.${people.count}.${m.unresolved ?? 0}.${m.imported ?? ''}`;
+}
+
 async function statusPayload() {
   const config = await readConfig();
   const codes = db.prepare('SELECT COUNT(*) AS count FROM share_codes').get();
@@ -701,6 +711,7 @@ async function statusPayload() {
     online: true,
     credentials: { gameAuth: Boolean(config.CS2_GAME_AUTH_CODE), apiKey: Boolean(config.STEAM_WEB_API_KEY), steamId: Boolean(config.STEAM_ID64), knownCode: Boolean(config.CS2_KNOWN_SHARE_CODE) },
     steamId64: config.STEAM_ID64 || '', discoveredCodes: Number(codes.count), analyzedMatches: Number(matches.count), playerCount: Number(players.count),
+    archiveRevision: archiveRevision(),
     steam: { status: steamState.status, message: steamState.message, hasSavedSession: existsSync(tokenPath), qrDataUrl: steamState.qrDataUrl },
     importing: { ...importState },
     maps: { ...mapState },

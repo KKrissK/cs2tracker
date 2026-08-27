@@ -42,6 +42,7 @@ async function publicStatus() {
     online: true,
     credentials: { gameAuth: false, apiKey: false, steamId: false, knownCode: false },
     steamId64: archive.published?.ownerSteamId64 ?? '',
+    archiveRevision: archive.published?.publishedAt ?? 'empty',
     discoveredCodes: archive.matches.length,
     analyzedMatches: archive.matches.length,
     playerCount: archive.players.length,
