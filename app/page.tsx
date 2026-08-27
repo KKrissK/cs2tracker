@@ -79,9 +79,19 @@ function playerColor(accountId: number) {
   return colors[Math.abs(accountId) % colors.length];
 }
 
+// Steam serves 184px "_full" avatars, but these render between 24px and 38px.
+// The 64px "_medium" variant is still sharp on HiDPI and costs about an eighth
+// of the decoded image memory across thousands of distinct players.
+function avatarSource(avatarUrl: string) {
+  return avatarUrl.replace(/_full\.jpg$/i, '_medium.jpg');
+}
+
 function PlayerAvatar({ player, className = '' }: { player: Player; className?: string }) {
-  const picture = player.avatarUrl.replace(/["'()\\]/g, (character) => encodeURIComponent(character));
-  return <span className={`player-avatar ${className}`} role="img" aria-label={`${player.name} profile picture`} style={{ backgroundColor: playerColor(player.accountId) }}><span className="avatar-fallback">{initials(player.name)}</span>{picture && <span className="avatar-photo" style={{ backgroundImage: `url("${picture}")` }} />}</span>;
+  const picture = avatarSource(player.avatarUrl);
+  // Native lazy loading keeps offscreen ledger rows from fetching and decoding
+  // an avatar the user never scrolls to.
+  // eslint-disable-next-line @next/next/no-img-element -- remote Steam CDN avatars, no next/image loader in this local app
+  return <span className={`player-avatar ${className}`} role="img" aria-label={`${player.name} profile picture`} style={{ backgroundColor: playerColor(player.accountId) }}><span className="avatar-fallback">{initials(player.name)}</span>{picture && <img className="avatar-photo" src={picture} alt="" loading="lazy" decoding="async" width={64} height={64} />}</span>;
 }
 
 export default function Home() {

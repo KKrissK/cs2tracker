@@ -31,3 +31,6 @@
 @media(max-width:650px){.lineup-presets{display:block}.preset-save{margin-top:12px}.preset-save input{width:100%}}
 
 .ledger-more{margin-top:14px;width:100%;padding:13px;display:flex;flex-direction:column;align-items:center;gap:3px;border:1px dashed #3c4138;border-radius:9px;background:#1c1f1b;color:var(--ink);font-size:11px;font-weight:800;cursor:pointer}.ledger-more:hover{border-color:#596735;color:var(--acid)}.ledger-more small{color:#767c72;font-size:9px;font-weight:700;letter-spacing:.06em}
+
+img.avatar-photo{width:100%;height:100%;object-fit:cover;border-radius:inherit}
+.match-table .match-row:not(.match-head){content-visibility:auto;contain-intrinsic-size:auto 58px}
