@@ -340,6 +340,7 @@ async function startImport() {
     csgo = null;
     gcReadyPromise = null;
     setSteamState('ready', 'Steam approval is saved. Ready for the next match sync.', '');
+    if (importState.imported) await republishLive().catch(() => {});
     return { ...importState };
   })().finally(() => { importPromise = null; });
   return importPromise;
@@ -787,7 +788,7 @@ async function deleteLineup(id) {
   return writeLineups(lineups.filter((lineup) => lineup.id !== target));
 }
 
-async function publishSelection(selectedPlayerIds) {
+async function publishSelection(selectedPlayerIds, live = false) {
   const config = await readConfig();
   const selected = [...new Set((Array.isArray(selectedPlayerIds) ? selectedPlayerIds : []).map(Number).filter(Number.isInteger))];
   if (selected.length < 2 || selected.length > 5) throw new Error('Select two to five players before publishing.');
@@ -810,12 +811,28 @@ async function publishSelection(selectedPlayerIds) {
     matches,
     players,
     stats,
-    published: { publishedAt: new Date().toISOString(), selectedPlayerIds: selected, ownerSteamId64: config.STEAM_ID64, matchCount: matches.length },
+    published: { publishedAt: new Date().toISOString(), selectedPlayerIds: selected, ownerSteamId64: config.STEAM_ID64, matchCount: matches.length, live: Boolean(live) },
   };
   const temporary = `${publishedPath}.tmp`;
   await writeFile(temporary, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
   await rename(temporary, publishedPath);
   return payload;
+}
+
+// When the owner leaves the view-only page live, every newly analyzed match is
+// re-published under the lineup they already chose. Nothing new is exposed: the
+// snapshot is rebuilt by the same code path, which strips share codes.
+async function republishLive() {
+  if (!existsSync(publishedPath)) return false;
+  try {
+    const current = JSON.parse(await readFile(publishedPath, 'utf8'));
+    const info = current?.published;
+    if (!info?.live || !Array.isArray(info.selectedPlayerIds) || info.selectedPlayerIds.length < 2) return false;
+    await publishSelection(info.selectedPlayerIds, true);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function syncShareCodes() {
@@ -889,7 +906,7 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === 'POST' && url.pathname === '/api/publish') {
       const body = await bodyJson(request);
-      const published = await publishSelection(body.selectedPlayerIds);
+      const published = await publishSelection(body.selectedPlayerIds, body.live);
       return send(response, 200, { published: published.published });
     }
     if (request.method === 'POST' && url.pathname === '/api/maps') {
@@ -924,6 +941,23 @@ const server = createServer(async (request, response) => {
     return send(response, 500, { error: error instanceof Error ? error.message : 'Unexpected local service error.' });
   }
 });
+
+// steam-user throws from inside its own async handlers, outside any promise this
+// service can await, so an expired or rejected Steam session used to kill the
+// whole process and take the archive API down with it. Serving the archive is
+// the primary job; a broken Steam link is reported through status instead.
+function surviveSteamFault(label, error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`${label}: ${error instanceof Error ? error.stack : message}`);
+  setSteamState('error', `Steam connection failed: ${message}`, '');
+  try { steamUser?.removeAllListeners(); steamUser?.logOff(); } catch {}
+  steamUser = null;
+  csgo = null;
+  gcReadyPromise = null;
+}
+
+process.on('uncaughtException', (error) => surviveSteamFault('Unhandled exception (service kept running)', error));
+process.on('unhandledRejection', (reason) => surviveSteamFault('Unhandled rejection (service kept running)', reason));
 
 server.listen(port, '127.0.0.1', () => console.log(`Stackline local service: http://127.0.0.1:${port}`));
 if (existsSync(tokenPath)) readFile(tokenPath, 'utf8').then((token) => connectSteam(clean(token))).catch((error) => setSteamState('error', `Saved Steam session failed: ${error.message}`, ''));

@@ -18,7 +18,7 @@ type ServiceStatus = {
 type Match = { id: string; shareCode: string; playedAt: string; map: string; durationSeconds: number; rounds: number; teamAScore: number; teamBScore: number; userTeam: number | null; result: string };
 type Player = { accountId: number; steamId64: string; name: string; avatarUrl: string };
 type PlayerMatch = { matchId: string; accountId: number; team: number; kills: number; deaths: number; assists: number; headshots: number; mvps: number; score: number; rating: number };
-type PublishedInfo = { publishedAt: string; selectedPlayerIds: number[]; ownerSteamId64: string; matchCount: number };
+type PublishedInfo = { publishedAt: string; selectedPlayerIds: number[]; ownerSteamId64: string; matchCount: number; live?: boolean };
 type Archive = { matches: Match[]; players: Player[]; stats: PlayerMatch[]; published?: PublishedInfo | null };
 type Lineup = { id: string; name: string; playerIds: number[]; savedAt: string };
 
@@ -119,6 +119,7 @@ export default function Home() {
   const [lineupName, setLineupName] = useState('');
   const [savingLineup, setSavingLineup] = useState(false);
   const [ledgerLimit, setLedgerLimit] = useState(100);
+  const [liveShare, setLiveShare] = useState(true);
   const [view, setView] = useState<'overview' | 'played-with'>('overview');
   const mapsRequested = useRef(false);
   const selectionSeeded = useRef(false);
@@ -264,6 +265,17 @@ export default function Home() {
   }, [archive.players, filteredMatches, playerById, selected, statsByAccount, statsByMatch]);
   const availablePlayers = useMemo(() => archive.players.filter((player) => !selected.includes(player.accountId) && player.name.toLowerCase().includes(search.toLowerCase())).slice(0, 8), [archive.players, search, selected]);
   const ledgerMatches = useMemo(() => filteredMatches.slice(0, ledgerLimit), [filteredMatches, ledgerLimit]);
+  const todayMatches = useMemo(() => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    return filteredMatches.filter((match) => new Date(match.playedAt).getTime() >= midnight.getTime());
+  }, [filteredMatches]);
+  const recentForm = useMemo(() => filteredMatches.slice(0, 10), [filteredMatches]);
+  const todayRecord = useMemo(() => ({
+    wins: todayMatches.filter((match) => match.result === 'win').length,
+    losses: todayMatches.filter((match) => match.result === 'loss').length,
+    draws: todayMatches.filter((match) => match.result !== 'win' && match.result !== 'loss').length,
+  }), [todayMatches]);
   const lineupSuggestion = useMemo(() => selected.filter((id) => id !== ownerAccountId).map((id) => playerById.get(id)?.name).filter(Boolean).join(' + '), [ownerAccountId, playerById, selected]);
   const firstPlaceFinishes = visibleStats.reduce((sum, row) => sum + row.placements[0], 0);
   const bestAveragePlacement = visibleStats.length ? Math.min(...visibleStats.map((row) => row.averagePlacement)) : 0;
@@ -335,10 +347,12 @@ export default function Home() {
     if (viewerMode || selected.length < 2) return;
     setPublishing(true); setNotice('');
     try {
-      const response = await fetch(apiUrl('/api/publish'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selectedPlayerIds: selected }) });
+      const response = await fetch(apiUrl('/api/publish'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selectedPlayerIds: selected, live: liveShare }) });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not publish the viewer snapshot.');
-      setNotice(`Published ${payload.published.matchCount} shared matches to the view-only page.`);
+      setNotice(liveShare
+        ? `Published ${payload.published.matchCount} matches. The view-only page now updates itself as new matches are analyzed.`
+        : `Published ${payload.published.matchCount} shared matches to the view-only page.`);
     } catch (caught) { setNotice(caught instanceof Error ? caught.message : 'Could not publish the viewer snapshot.'); }
     finally { setPublishing(false); }
   }
@@ -431,8 +445,21 @@ export default function Home() {
 
           {view === 'overview' && <a className="played-with-cta" href="#played-with"><span>◉</span><div><p className="eyebrow accent">Played with</p><h2>Build a lineup and compare shared matches</h2><small>{ownerPlayer?.name ?? 'Your Steam player'} is always included as the archive owner.</small></div><b>Open →</b></a>}
 
-          {view === 'played-with' && <>{archive.players.length > 0 && <section className="filter-card" id="players">
-            <div className="filter-heading"><div><p className="eyebrow">{viewerMode ? 'Published lineup' : 'Lineup filter'}</p><h2>{viewerMode ? 'Last published comparison' : 'Who played together?'}</h2></div>{viewerMode ? <p className="selection-rule">{archive.published ? `Published ${new Date(archive.published.publishedAt).toLocaleString()}` : 'Nothing published yet'}</p> : <button className="publish-button" type="button" disabled={publishing || selected.length < 2} onClick={publishViewer}>{publishing ? 'Publishing…' : 'Publish to view-only page ↗'}</button>}</div>
+          {view === 'played-with' && <>{viewerMode && archive.published && <section className="live-card" aria-labelledby="live-title">
+            <div className="live-heading">
+              <div><p className="eyebrow accent">{archive.published.live ? 'Live feed' : 'Snapshot'}</p><h2 id="live-title">Recent matches</h2></div>
+              <span className={archive.published.live ? 'live-pill on' : 'live-pill'}><i />{archive.published.live ? 'Updating automatically' : 'Fixed snapshot'}</span>
+            </div>
+            <div className="live-today">
+              <div><strong>{todayMatches.length}</strong><span>Played today</span></div>
+              <div><strong className={todayRecord.wins > todayRecord.losses ? 'score-win' : todayRecord.losses > todayRecord.wins ? 'score-loss' : ''}>{todayRecord.wins}–{todayRecord.losses}{todayRecord.draws ? `–${todayRecord.draws}` : ''}</strong><span>Today W–L</span></div>
+              <div><strong>{filteredMatches.length}</strong><span>Total together</span></div>
+              <div className="form-cell"><span>Recent form</span><div className="form-dots">{recentForm.map((match) => <b key={match.id} className={match.result === 'win' ? 'form-win' : match.result === 'loss' ? 'form-loss' : 'form-draw'} title={`${match.map.replace(/^de_/, '')} · ${new Date(match.playedAt).toLocaleDateString()}`}>{match.result === 'win' ? 'W' : match.result === 'loss' ? 'L' : 'D'}</b>)}</div></div>
+            </div>
+            {todayMatches.length === 0 && <p className="live-empty">No matches yet today. This page refreshes on its own when the lineup plays.</p>}
+          </section>}
+          {archive.players.length > 0 && <section className="filter-card" id="players">
+            <div className="filter-heading"><div><p className="eyebrow">{viewerMode ? 'Published lineup' : 'Lineup filter'}</p><h2>{viewerMode ? 'Last published comparison' : 'Who played together?'}</h2></div>{viewerMode ? <p className="selection-rule">{archive.published ? `${archive.published.live ? 'Live · updated' : 'Published'} ${new Date(archive.published.publishedAt).toLocaleString()}` : 'Nothing published yet'}</p> : <div className="publish-controls"><label className="live-toggle" title="Re-publish automatically whenever new matches are analyzed"><input type="checkbox" checked={liveShare} onChange={(event) => setLiveShare(event.target.checked)} /><span>Keep live</span></label><button className="publish-button" type="button" disabled={publishing || selected.length < 2} onClick={publishViewer}>{publishing ? 'Publishing…' : 'Publish to view-only page ↗'}</button></div>}</div>
             {!viewerMode && <div className="lineup-presets">
               <div className="preset-list">
                 <p className="eyebrow">Saved lineups</p>
