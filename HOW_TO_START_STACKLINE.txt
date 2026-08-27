@@ -1,0 +1,50 @@
+HOW TO RUN STACKLINE WITHOUT CODEX OR AN AI PROMPT
+==================================================
+
+EASIEST METHOD
+--------------
+1. Open this folder:
+   C:\Users\Kriss\Documents\ChatGPT\CS2 analyzer
+
+2. Double-click:
+   START_STACKLINE.cmd
+
+3. Keep the black command window open. Your browser opens the private app at:
+   http://localhost:3000/#played-with
+
+The same startup also runs:
+   Read-only viewer: http://localhost:3001/#played-with
+   Local data service: http://127.0.0.1:4300
+
+
+STOPPING STACKLINE
+------------------
+Double-click:
+   STOP_STACKLINE.cmd
+
+You can also focus the Stackline command window and press Ctrl+C.
+
+
+MANUAL POWERSHELL METHOD
+------------------------
+Open PowerShell and run:
+
+   cd "C:\Users\Kriss\Documents\ChatGPT\CS2 analyzer"
+   npm run dev
+
+Keep that PowerShell window open. Press Ctrl+C to stop Stackline.
+
+
+SHARING THROUGH NGROK
+---------------------
+Stackline and ngrok are separate. Start Stackline first, then follow:
+   NGROK_VIEWER_GUIDE.txt
+
+Stopping Stackline does not always stop a separately opened ngrok process.
+Stop ngrok in its own window with Ctrl+C when sharing is no longer needed.
+
+
+DATA AND SETTINGS
+-----------------
+Your match database, published viewer snapshot, Steam session, and settings are
+stored locally. Starting and stopping the app does not erase them.

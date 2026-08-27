@@ -1,0 +1,85 @@
+STACKLINE READ-ONLY VIEWER — NGROK GUIDE
+=========================================
+
+WHAT IS SHARED
+--------------
+Private app:       http://localhost:3000/#played-with
+Read-only viewer:  http://localhost:3001/#played-with
+
+Only port 3001 should be exposed through ngrok. The viewer rejects write
+requests and does not expose Valve credentials or match-sharing codes.
+Anyone with the public URL can still see the displayed Steam names, profile
+pictures, Steam IDs, match dates, and statistics.
+
+The viewer shows only the most recent snapshot published from the private
+Played With page. Choose players privately, then press "Publish to view-only
+page". Visitors cannot change the published lineup or run new searches; they
+can only inspect the published player cards, matches, and detail views.
+
+
+ONE-TIME NGROK ACCOUNT SETUP
+----------------------------
+1. Create or sign in to a free ngrok account:
+   https://dashboard.ngrok.com/signup
+
+2. Copy your authtoken from:
+   https://dashboard.ngrok.com/get-started/your-authtoken
+
+3. Open PowerShell in this project folder and run:
+
+   ngrok config add-authtoken "PASTE_YOUR_TOKEN_HERE"
+
+The authtoken is saved in ngrok's user configuration, not in this project.
+Do not paste it into this text file or send it to teammates.
+
+
+START SHARING
+-------------
+1. Make sure Stackline is running. The following local page must open:
+
+   http://localhost:3001/#played-with
+
+2. Open PowerShell in this project folder and run:
+
+   ngrok http 3001
+
+3. Ngrok prints a Forwarding URL similar to:
+
+   https://example-name.ngrok-free.app
+
+4. Send teammates that URL. Stackline automatically locks it to the latest
+   published Played With snapshot:
+
+   https://example-name.ngrok-free.app/
+
+   A link ending in /#played-with also works and will be corrected automatically.
+
+Keep the ngrok PowerShell window open while sharing. On the free plan, the
+public URL may change each time ngrok starts.
+
+
+STOP SHARING
+------------
+Normal method:
+
+1. Focus the PowerShell window running ngrok.
+2. Press Ctrl+C.
+3. Confirm the public URL no longer loads.
+
+If the window was lost, open another PowerShell and run:
+
+   Get-Process ngrok -ErrorAction SilentlyContinue | Stop-Process
+
+Stopping ngrok does not stop Stackline. The private app and local viewer remain
+available only on this computer.
+
+
+CHECK STATUS
+------------
+While ngrok is running, its local traffic inspector is usually available at:
+
+   http://127.0.0.1:4040
+
+The read-only viewer itself is always checked locally at:
+
+   http://localhost:3001/#played-with
