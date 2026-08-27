@@ -159,6 +159,44 @@ async function saveRefreshToken(token) {
   await chmod(tokenPath, 0o600).catch(() => {});
 }
 
+const importProfile = { steamId64: '', personaName: '', avatarUrl: '', fetchedAt: 0 };
+let importProfilePending = false;
+
+async function refreshImportProfile(steamId64) {
+  if (importProfilePending) return;
+  importProfilePending = true;
+  try {
+    const config = await readConfig();
+    if (!config.STEAM_WEB_API_KEY) return;
+    const url = new URL('https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/');
+    url.searchParams.set('key', config.STEAM_WEB_API_KEY);
+    url.searchParams.set('steamids', steamId64);
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!response.ok) return;
+    const player = (await response.json())?.response?.players?.[0];
+    if (!player) return;
+    Object.assign(importProfile, {
+      steamId64,
+      personaName: clean(player.personaname),
+      avatarUrl: clean(player.avatarfull),
+      fetchedAt: Date.now(),
+    });
+  } catch {
+    // A profile picture is decoration; failing to load it must not affect status.
+  } finally {
+    importProfilePending = false;
+  }
+}
+
+function readImportProfile(steamId64) {
+  if (!steamId64) return { personaName: '', avatarUrl: '' };
+  const stale = importProfile.steamId64 !== steamId64 || Date.now() - importProfile.fetchedAt > 6 * 60 * 60 * 1000;
+  if (stale) void refreshImportProfile(steamId64);
+  return importProfile.steamId64 === steamId64
+    ? { personaName: importProfile.personaName, avatarUrl: importProfile.avatarUrl }
+    : { personaName: '', avatarUrl: '' };
+}
+
 async function fetchPlayerNames(accountIds) {
   if (!accountIds.length) return;
   const config = await readConfig();
@@ -805,6 +843,7 @@ async function statusPayload() {
   const config = await readConfig();
   const importAccount = readImportAccount();
   const blockage = liveBlockage();
+  const importIdentity = readImportProfile(importAccount);
   const codes = db.prepare('SELECT COUNT(*) AS count FROM share_codes').get();
   const matches = db.prepare('SELECT COUNT(*) AS count FROM matches').get();
   const players = db.prepare('SELECT COUNT(*) AS count FROM players').get();
@@ -817,6 +856,8 @@ async function statusPayload() {
       status: steamState.status, message: steamState.message, hasSavedSession: existsSync(tokenPath), qrDataUrl: steamState.qrDataUrl,
       importSteamId64: importAccount,
       importIsOwner: Boolean(importAccount && importAccount === config.STEAM_ID64),
+      importPersonaName: importIdentity.personaName,
+      importAvatarUrl: importIdentity.avatarUrl,
     },
     importing: { ...importState },
     maps: { ...mapState },

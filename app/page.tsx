@@ -10,7 +10,7 @@ type ServiceStatus = {
   discoveredCodes: number;
   analyzedMatches: number;
   playerCount: number;
-  steam: { status: string; message: string; hasSavedSession: boolean; qrDataUrl: string; importSteamId64?: string; importIsOwner?: boolean };
+  steam: { status: string; message: string; hasSavedSession: boolean; qrDataUrl: string; importSteamId64?: string; importIsOwner?: boolean; importPersonaName?: string; importAvatarUrl?: string };
   importing: { running: boolean; total: number; processed: number; imported: number; failed: number; message: string };
   maps: { running: boolean; total: number; processed: number; resolved: number; failed: number; message: string };
   backfill?: { running: boolean; target: number; pages: number; seen: number; imported: number; skipped: number; failed: number; message: string };
@@ -134,6 +134,15 @@ function RecentPicker({ entries, value, onChange }: { entries: RecentEntry[]; va
     <option value="">Enter a new value…</option>
     {entries.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}{entry.savedAt ? ` · ${new Date(entry.savedAt).toLocaleDateString()}` : ''}</option>)}
   </select>;
+}
+
+function AccountAvatar({ avatarUrl, name, className = '' }: { avatarUrl?: string; name: string; className?: string }) {
+  const picture = avatarSource(avatarUrl ?? '');
+  return <span className={`player-avatar ${className}`} role="img" aria-label={`${name} profile picture`} style={{ backgroundColor: '#2c3128' }}>
+    <span className="avatar-fallback">{initials(name)}</span>
+    {/* eslint-disable-next-line @next/next/no-img-element -- remote Steam CDN avatar, no next/image loader in this local app */}
+    {picture && <img className="avatar-photo" src={picture} alt="" loading="lazy" decoding="async" width={64} height={64} />}
+  </span>;
 }
 
 export default function Home() {
@@ -514,12 +523,15 @@ export default function Home() {
 
       <div className="dashboard" id="top">
         <aside className="sidebar">
-          <div><p className="eyebrow">Navigation</p><nav aria-label="Main navigation">{!viewerMode && <a className={view === 'overview' ? 'nav-item active' : 'nav-item'} href="#overview"><span>⌁</span>Overview</a>}<a className={view === 'played-with' ? 'nav-item active' : 'nav-item'} href="#played-with"><span>◉</span>Played with</a>{!viewerMode && <a className="nav-item" href="http://localhost:3001/live" target="_blank" rel="noreferrer"><span>↗</span>View-only page</a>}</nav></div>
+          <div><p className="eyebrow">Navigation</p><nav aria-label="Main navigation">{viewerMode
+              ? <><a className={liveRoute ? 'nav-item active' : 'nav-item'} href="/live"><span>◉</span>Live today</a><a className={liveRoute ? 'nav-item' : 'nav-item active'} href="/archive"><span>▤</span>Full archive</a></>
+              : <><a className={view === 'overview' ? 'nav-item active' : 'nav-item'} href="#overview"><span>⌁</span>Overview</a><a className={view === 'played-with' ? 'nav-item active' : 'nav-item'} href="#played-with"><span>◉</span>Played with</a><a className="nav-item" href="http://localhost:3001/live" target="_blank" rel="noreferrer"><span>↗</span>View-only page</a></>}</nav></div>
           {!viewerMode && <button className="connection-card profile-trigger" type="button" aria-haspopup="dialog" onClick={() => setProfileOpen(true)}>{ownerPlayer ? <PlayerAvatar player={ownerPlayer} className="connection-avatar" /> : <span className="connection-icon">S</span>}<div><strong>{ownerPlayer?.name ?? (steamReady ? 'Steam approved' : 'Steam setup')}</strong><p>{steamConnected ? 'Game Coordinator connected' : steamReady ? 'Saved local session' : `${credentialCount} of 4 keys saved`}</p></div><span aria-hidden="true">›</span></button>}
         </aside>
 
         <section className="content" id={view}>
           {!viewerMode && liveBlocked && <div className="stall-banner" role="status"><span>!</span><div><strong>{service?.live?.pending} match{service?.live?.pending === 1 ? '' : 'es'} found but not imported</strong><p>{service?.live?.reason}</p></div><button type="button" onClick={() => { void connectSteam(); }}>Fix Steam access</button></div>}
+          {viewerMode && <nav className="shared-tabs" aria-label="Shared pages"><a className={liveRoute ? 'shared-tab active' : 'shared-tab'} href="/live">Live today</a><a className={liveRoute ? 'shared-tab' : 'shared-tab active'} href="/archive">Full archive</a></nav>}
           <div className="hero-row"><div><p className="eyebrow accent">{liveRoute ? 'Live Premier feed' : viewerMode ? 'Shared Premier archive' : view === 'played-with' ? 'Lineup intelligence' : 'Premier match intelligence'}</p><h1>{liveRoute ? 'Today, as it happens.' : view === 'played-with' ? 'Who played with you?' : 'Your real match archive.'}</h1><p className="lede">{liveRoute ? `Every Premier match ${publishedNames || 'this lineup'} finishes today appears here on its own, a few minutes after it ends.` : view === 'played-with' ? `${ownerPlayer?.name ?? 'Your Steam player'} stays selected. Add one to four players to recalculate every match and statistic where everyone was present.` : 'Your authenticated Valve history, player profiles, match scoreboards, and map data are stored locally and ready to explore.'}</p></div><div className="scope-pill"><span>●</span>{viewerMode ? ' Live · Read only' : ' Valve Premier · Local only'}</div></div>
           {notice && <button className="notice" type="button" onClick={() => setNotice('')}><span>i</span>{notice}<b>×</b></button>}
 
@@ -538,7 +550,7 @@ export default function Home() {
 
           {view === 'overview' && <a className="played-with-cta" href="#played-with"><span>◉</span><div><p className="eyebrow accent">Played with</p><h2>Build a lineup and compare shared matches</h2><small>{ownerPlayer?.name ?? 'Your Steam player'} is always included as the archive owner.</small></div><b>Open →</b></a>}
 
-          {view === 'played-with' && <>{viewerMode && archive.published && <section className="live-card" aria-labelledby="live-title">
+          {view === 'played-with' && <>{viewerMode && liveRoute && archive.published && <section className="live-card" aria-labelledby="live-title">
             <div className="live-heading">
               <div><p className="eyebrow accent">{archive.published.live ? 'Live feed' : 'Snapshot'}</p><h2 id="live-title">Recent matches</h2></div>
               <span className={archive.published.live && !liveBlocked ? 'live-pill on' : liveBlocked ? 'live-pill stalled' : 'live-pill'}><i />{liveBlocked ? `${service?.live?.pending ?? 0} match${(service?.live?.pending ?? 0) === 1 ? '' : 'es'} waiting` : archive.published.live ? 'Updating automatically' : 'Fixed snapshot'}</span>
@@ -562,7 +574,7 @@ export default function Home() {
             </div>
             {liveBlocked && <p className="live-stalled">New matches are being detected but their scoreboards have not arrived yet, so this page is behind. The archive owner needs to finish the import.</p>}
             {rangeMatches.length === 0 && <p className="live-empty">{rangeIsToday ? 'No matches yet today. This page refreshes on its own when the lineup plays.' : `No matches in that period. Showing the ${Math.min(20, filteredMatches.length)} most recent instead.`}</p>}
-            <div className="live-links">{liveRoute ? <a href="/archive">Full archive and player stats →</a> : <a href="/live">Live view of today →</a>}</div>
+            <div className="live-links"><a href="/archive">Full archive and player stats →</a></div>
           </section>}
           {!liveRoute && archive.players.length > 0 && <section className="filter-card" id="players">
             <div className="filter-heading"><div><p className="eyebrow">{viewerMode ? 'Published lineup' : 'Lineup filter'}</p><h2>{viewerMode ? 'Last published comparison' : 'Who played together?'}</h2></div>{viewerMode ? <p className="selection-rule">{archive.published ? `${archive.published.live ? 'Live · updated' : 'Published'} ${new Date(archive.published.publishedAt).toLocaleString()}` : 'Nothing published yet'}</p> : <div className="publish-controls"><label className="live-toggle" title="Check Valve for new matches every 5 minutes and re-publish the shared page automatically"><input type="checkbox" checked={liveShare} onChange={(event) => setLiveShare(event.target.checked)} /><span>Keep live</span></label>{service?.live?.enabled && <span className={liveBlocked ? 'live-status blocked' : 'live-status'} title={service.live.reason || service.live.message}><i />{liveBlocked ? `${service.live.pending} waiting` : service.live.checkedAt ? `Checked ${new Date(service.live.checkedAt).toLocaleTimeString()}` : 'Checking…'}</span>}<button className="publish-button" type="button" disabled={publishing || selected.length < 2} onClick={publishViewer}>{publishing ? 'Publishing…' : 'Publish to view-only page ↗'}</button></div>}</div>
@@ -655,7 +667,15 @@ export default function Home() {
             <div><strong>Archived profile</strong><small>SteamID64 {service?.steamId64 || 'not set'}</small></div>
           </div>
           <div className="profile-rows">
-            <div className="profile-row"><div><strong>Importing account</strong><small>{service?.steam.importSteamId64 ? `${service.steam.importSteamId64}${service.steam.importIsOwner ? ' · same as archived profile' : ' · separate account'}` : 'No Steam account approved'}</small></div><button type="button" onClick={() => { setProfileOpen(false); void connectSteam(); }}>{service?.steam.hasSavedSession ? 'Manage' : 'Approve'}</button></div>
+            <div className="profile-row account-row">
+              <AccountAvatar avatarUrl={service?.steam.importAvatarUrl} name={service?.steam.importPersonaName || 'Steam account'} className="row-avatar" />
+              <div>
+                <strong>Importing account{service?.steam.importPersonaName ? ` · ${service.steam.importPersonaName}` : ''}</strong>
+                <small className="row-explainer">Signs in to Steam and asks the CS2 Game Coordinator for each match scoreboard. It does not have to be the archived profile, because a match is fetched with its own share code. Using a second account frees your main one, so importing no longer collides with playing CS2.</small>
+                <small>{service?.steam.importSteamId64 ? `SteamID64 ${service.steam.importSteamId64} · ${service.steam.importIsOwner ? 'this is your archived profile, so imports pause while you play' : 'separate from the archived profile'}` : 'No Steam account approved yet'}</small>
+              </div>
+              <button type="button" onClick={() => { setProfileOpen(false); void connectSteam(); }}>{service?.steam.hasSavedSession ? 'Manage' : 'Approve'}</button>
+            </div>
             <div className="profile-row"><div><strong>Steam session</strong><small>{steamConnected ? 'Game Coordinator connected' : service?.steam.message || 'Not connected'}</small></div><span className={steamConnected ? 'status-dot ready' : 'status-dot'} /></div>
             <div className="profile-row"><div><strong>Valve credentials</strong><small>{credentialCount} of 4 saved{liveBlocked ? ` · ${service?.live?.pending} match${service?.live?.pending === 1 ? '' : 'es'} waiting` : ''}</small></div><button type="button" onClick={() => { setProfileOpen(false); setSettingsOpen(true); }}>Configure</button></div>
           </div>
