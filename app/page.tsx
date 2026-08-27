@@ -14,7 +14,7 @@ type ServiceStatus = {
   importing: { running: boolean; total: number; processed: number; imported: number; failed: number; message: string };
   maps: { running: boolean; total: number; processed: number; resolved: number; failed: number; message: string };
   backfill?: { running: boolean; target: number; pages: number; seen: number; imported: number; skipped: number; failed: number; message: string };
-  live?: { enabled: boolean; checkedAt: string; message: string };
+  live?: { enabled: boolean; checkedAt: string; message: string; pending?: number; blocked?: boolean; reason?: string };
 };
 type Match = { id: string; shareCode: string; playedAt: string; map: string; durationSeconds: number; rounds: number; teamAScore: number; teamBScore: number; userTeam: number | null; result: string };
 type Player = { accountId: number; steamId64: string; name: string; avatarUrl: string };
@@ -250,6 +250,7 @@ export default function Home() {
     if (!viewerMode) void fetch(apiUrl('/api/maps'), { method: 'POST' }).then(() => refresh()).catch(() => {});
   }, [archive.matches, refresh, viewerMode]);
 
+  const liveBlocked = Boolean(service?.live?.blocked);
   const credentialCount = service ? Object.values(service.credentials).filter(Boolean).length : 0;
   const readyToSync = credentialCount === 4;
   const steamConnected = service?.steam.status === 'connected';
@@ -484,6 +485,7 @@ export default function Home() {
         </aside>
 
         <section className="content" id={view}>
+          {!viewerMode && liveBlocked && <div className="stall-banner" role="status"><span>!</span><div><strong>{service?.live?.pending} match{service?.live?.pending === 1 ? '' : 'es'} found but not imported</strong><p>{service?.live?.reason}</p></div><button type="button" onClick={() => { void connectSteam(); }}>Fix Steam access</button></div>}
           <div className="hero-row"><div><p className="eyebrow accent">{liveRoute ? 'Live Premier feed' : viewerMode ? 'Shared Premier archive' : view === 'played-with' ? 'Lineup intelligence' : 'Premier match intelligence'}</p><h1>{liveRoute ? 'Today, as it happens.' : view === 'played-with' ? 'Who played with you?' : 'Your real match archive.'}</h1><p className="lede">{liveRoute ? `Every Premier match ${publishedNames || 'this lineup'} finishes today appears here on its own, a few minutes after it ends.` : view === 'played-with' ? `${ownerPlayer?.name ?? 'Your Steam player'} stays selected. Add one to four players to recalculate every match and statistic where everyone was present.` : 'Your authenticated Valve history, player profiles, match scoreboards, and map data are stored locally and ready to explore.'}</p></div><div className="scope-pill"><span>●</span>{viewerMode ? ' Live · Read only' : ' Valve Premier · Local only'}</div></div>
           {notice && <button className="notice" type="button" onClick={() => setNotice('')}><span>i</span>{notice}<b>×</b></button>}
 
@@ -505,7 +507,7 @@ export default function Home() {
           {view === 'played-with' && <>{viewerMode && archive.published && <section className="live-card" aria-labelledby="live-title">
             <div className="live-heading">
               <div><p className="eyebrow accent">{archive.published.live ? 'Live feed' : 'Snapshot'}</p><h2 id="live-title">Recent matches</h2></div>
-              <span className={archive.published.live ? 'live-pill on' : 'live-pill'}><i />{archive.published.live ? 'Updating automatically' : 'Fixed snapshot'}</span>
+              <span className={archive.published.live && !liveBlocked ? 'live-pill on' : liveBlocked ? 'live-pill stalled' : 'live-pill'}><i />{liveBlocked ? `${service?.live?.pending ?? 0} match${(service?.live?.pending ?? 0) === 1 ? '' : 'es'} waiting` : archive.published.live ? 'Updating automatically' : 'Fixed snapshot'}</span>
             </div>
             <div className="live-range">
               <div className="range-presets" role="group" aria-label="Match period">
@@ -524,11 +526,12 @@ export default function Home() {
               <div><strong>{filteredMatches.length}</strong><span>Total together</span></div>
               <div className="form-cell"><span>Recent form</span><div className="form-dots">{recentForm.map((match) => <b key={match.id} className={match.result === 'win' ? 'form-win' : match.result === 'loss' ? 'form-loss' : 'form-draw'} title={`${match.map.replace(/^de_/, '')} · ${new Date(match.playedAt).toLocaleDateString()}`}>{match.result === 'win' ? 'W' : match.result === 'loss' ? 'L' : 'D'}</b>)}</div></div>
             </div>
+            {liveBlocked && <p className="live-stalled">New matches are being detected but their scoreboards have not arrived yet, so this page is behind. The archive owner needs to finish the import.</p>}
             {rangeMatches.length === 0 && <p className="live-empty">{rangeIsToday ? 'No matches yet today. This page refreshes on its own when the lineup plays.' : `No matches in that period. Showing the ${Math.min(20, filteredMatches.length)} most recent instead.`}</p>}
             <div className="live-links">{liveRoute ? <a href="/archive">Full archive and player stats →</a> : <a href="/live">Live view of today →</a>}</div>
           </section>}
           {!liveRoute && archive.players.length > 0 && <section className="filter-card" id="players">
-            <div className="filter-heading"><div><p className="eyebrow">{viewerMode ? 'Published lineup' : 'Lineup filter'}</p><h2>{viewerMode ? 'Last published comparison' : 'Who played together?'}</h2></div>{viewerMode ? <p className="selection-rule">{archive.published ? `${archive.published.live ? 'Live · updated' : 'Published'} ${new Date(archive.published.publishedAt).toLocaleString()}` : 'Nothing published yet'}</p> : <div className="publish-controls"><label className="live-toggle" title="Check Valve for new matches every 5 minutes and re-publish the shared page automatically"><input type="checkbox" checked={liveShare} onChange={(event) => setLiveShare(event.target.checked)} /><span>Keep live</span></label>{service?.live?.enabled && <span className="live-status" title={service.live.message}><i />{service.live.checkedAt ? `Checked ${new Date(service.live.checkedAt).toLocaleTimeString()}` : 'Checking…'}</span>}<button className="publish-button" type="button" disabled={publishing || selected.length < 2} onClick={publishViewer}>{publishing ? 'Publishing…' : 'Publish to view-only page ↗'}</button></div>}</div>
+            <div className="filter-heading"><div><p className="eyebrow">{viewerMode ? 'Published lineup' : 'Lineup filter'}</p><h2>{viewerMode ? 'Last published comparison' : 'Who played together?'}</h2></div>{viewerMode ? <p className="selection-rule">{archive.published ? `${archive.published.live ? 'Live · updated' : 'Published'} ${new Date(archive.published.publishedAt).toLocaleString()}` : 'Nothing published yet'}</p> : <div className="publish-controls"><label className="live-toggle" title="Check Valve for new matches every 5 minutes and re-publish the shared page automatically"><input type="checkbox" checked={liveShare} onChange={(event) => setLiveShare(event.target.checked)} /><span>Keep live</span></label>{service?.live?.enabled && <span className={liveBlocked ? 'live-status blocked' : 'live-status'} title={service.live.reason || service.live.message}><i />{liveBlocked ? `${service.live.pending} waiting` : service.live.checkedAt ? `Checked ${new Date(service.live.checkedAt).toLocaleTimeString()}` : 'Checking…'}</span>}<button className="publish-button" type="button" disabled={publishing || selected.length < 2} onClick={publishViewer}>{publishing ? 'Publishing…' : 'Publish to view-only page ↗'}</button></div>}</div>
             {!viewerMode && <div className="lineup-presets">
               <div className="preset-list">
                 <p className="eyebrow">Saved lineups</p>

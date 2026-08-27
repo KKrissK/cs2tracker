@@ -34,10 +34,25 @@ function rateLimited(request) {
   return entry.requests > 180;
 }
 
+// Visitors are told when the published page has fallen behind, but only the two
+// facts they need: how many matches are waiting, and that it is stalled. The
+// private status carries credentials and a QR code and is never forwarded.
+async function liveBlockage() {
+  try {
+    const response = await fetch(`${dataOrigin}/api/status`, { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) return { blocked: false, pending: 0 };
+    const status = await response.json();
+    return { blocked: Boolean(status?.live?.blocked), pending: Number(status?.live?.pending) || 0 };
+  } catch {
+    return { blocked: false, pending: 0 };
+  }
+}
+
 async function publicStatus() {
   const response = await fetch(`${dataOrigin}/api/published`, { signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new Error('Archive service unavailable.');
   const archive = await response.json();
+  const blockage = await liveBlockage();
   return {
     online: true,
     credentials: { gameAuth: false, apiKey: false, steamId: false, knownCode: false },
@@ -49,6 +64,7 @@ async function publicStatus() {
     steam: { status: 'viewer', message: archive.published ? 'Last published snapshot' : 'Nothing published yet', hasSavedSession: false, qrDataUrl: '' },
     importing: { running: false, total: 0, processed: 0, imported: 0, failed: 0, message: '' },
     maps: { running: false, total: archive.matches.length, processed: archive.matches.length, resolved: archive.matches.length, failed: 0, message: '' },
+    live: { enabled: Boolean(archive.published?.live), checkedAt: '', message: '', blocked: blockage.blocked, pending: blockage.pending },
   };
 }
 

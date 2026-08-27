@@ -730,9 +730,24 @@ function archiveRevision() {
   return `${m.count}.${rows.count}.${people.count}.${m.unresolved ?? 0}.${m.imported ?? ''}`;
 }
 
+// Discovery and import fail independently: share codes arrive over the Web API
+// while scoreboards need the Game Coordinator. Codes piling up unimported is the
+// signal that live sharing has quietly stopped moving.
+function liveBlockage() {
+  const pending = Number(db.prepare("SELECT COUNT(*) AS count FROM share_codes WHERE status != 'imported'").get().count);
+  if (!pending || importState.running || steamState.status === 'connected') return { pending, blocked: false, reason: '' };
+  const reason = !existsSync(tokenPath)
+    ? 'No Steam account is approved yet, so scoreboards cannot be imported.'
+    : /elsewhere|game coordinator|steam network/i.test(steamState.message)
+      ? 'The import account cannot reach the CS2 Game Coordinator, usually because that same account is playing CS2. Approve a second Steam account, or close CS2 and let it catch up.'
+      : steamState.message || 'Scoreboards cannot be imported right now.';
+  return { pending, blocked: true, reason };
+}
+
 async function statusPayload() {
   const config = await readConfig();
   const importAccount = readImportAccount();
+  const blockage = liveBlockage();
   const codes = db.prepare('SELECT COUNT(*) AS count FROM share_codes').get();
   const matches = db.prepare('SELECT COUNT(*) AS count FROM matches').get();
   const players = db.prepare('SELECT COUNT(*) AS count FROM players').get();
@@ -749,7 +764,7 @@ async function statusPayload() {
     importing: { ...importState },
     maps: { ...mapState },
     backfill: { ...backfillState },
-    live: { ...liveState },
+    live: { ...liveState, ...blockage },
   };
 }
 
